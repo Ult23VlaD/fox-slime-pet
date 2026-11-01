@@ -1,0 +1,8 @@
+*.log
+*.pid
+__pycache__/
+node_modules/
+.DS_Store
+Thumbs.db
+# тяжёлые промежуточные артефакты (восстановимы через Tripo API task_id)
+assets/fox-realistic.glb
