@@ -1,0 +1,3194 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="daimon-pet-runtime" content="148">
+  <title>Daimon Pet</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; margin: 0; overflow: hidden !important; background: transparent !important; }
+    body { user-select: none; -webkit-user-select: none; }
+    /* 球盒的透明边可伸出窗口。hidden 仍允许焦点/scrollIntoView 滚动 stage，
+       消息交互会把整只宠物上推一个透明边的高度，且宿主拖拽框不随之移动。
+       clip 禁止容器滚动；会话列表仍在自己的 scrollport 内滚动。 */
+    #stage { position: relative; width: 100%; height: 100%; overflow: clip; background: transparent; }
+    #pet {
+      position: absolute;
+      left: 50%;
+      bottom: 0;
+      display: none;
+      transform-origin: 50% 100%;
+      background-repeat: no-repeat;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+      will-change: background-position, transform;
+    }
+    #pet-three {
+      position: absolute;
+      left: 50%;
+      bottom: 0;
+      display: none;
+      width: 128px;
+      height: 128px;
+      contain: strict;
+      transform: translateX(-50%);
+    }
+    /* pointing hand 只落在 Three 球体实际命中区:canvas 元素的 CSS 光标覆盖
+       整个矩形,透明像素区也会显示成手型,所以静态规则不下发光标——由
+       reportThreeHitRegion 按射线命中结果内联切换(命中=SVG,未命中=默认);
+       窗口其余透明区(body/#stage)保持 auto。按下(拖拽)时命中恒 true,
+       保持同一指针,不切回默认。 */
+    #error {
+      position: absolute;
+      inset: 12px;
+      display: none;
+      place-items: center;
+      color: #b91c1c;
+      font: 12px/1.4 system-ui, sans-serif;
+      text-align: center;
+    }
+
+    :root {
+      /* Pet 窗口底板必须始终透明:暗色 color-scheme 会让 Chromium 把 iframe
+         画布合成成黑色,所以固定 light scheme,暗色完全走 data-theme 变量。 */
+      color-scheme: light;
+      --pet-bubble-background: #fff;
+      --pet-bubble-foreground: #25262b;
+      --pet-bubble-border: transparent;
+      --pet-bubble-surface: var(--pet-bubble-background);
+      --pet-bubble-text: var(--pet-bubble-foreground);
+      --pet-bubble-subtext: #6f7278;
+      /* Original pet bubble colors from the upstream runtime template. */
+      --pet-bubble-progress-text: #25262b;
+      --pet-bubble-progress-base: color-mix(in srgb, var(--pet-bubble-progress-text) 62%, transparent);
+      --pet-bubble-icon-complete: #1783ff;
+      --pet-bubble-icon-info: #ff9500;
+      --pet-bubble-icon-info-bg: color-mix(in srgb, var(--pet-bubble-icon-info) 12%, transparent);
+      --pet-bubble-icon-error: #ff453a;
+      --pet-bubble-icon-complete-bg: color-mix(in srgb, var(--pet-bubble-icon-complete) 12%, transparent);
+      --pet-bubble-icon-error-bg: color-mix(in srgb, var(--pet-bubble-icon-error) 12%, transparent);
+      --pet-bubble-icon-action: color-mix(in srgb, var(--pet-bubble-card-text) 90%, transparent);
+      --pet-bubble-icon-action-bg: rgba(0, 0, 0, 0.03);
+      --pet-bubble-card-background: rgba(255, 255, 255, 0.9);
+      --pet-bubble-card-border: rgba(0, 0, 0, 0.13);
+      --pet-bubble-card-shadow: 0 4px 16.4px 0 rgba(0, 0, 0, 0.1);
+      --pet-bubble-card-backdrop: blur(3px);
+      --pet-bubble-card-text: #25262b;
+      --pet-bubble-close-background: #fff;
+      --pet-bubble-close-background-hover: #f0f0f2;
+      --pet-bubble-toggle-background-hover: #f5f8ff;
+      --pet-bubble-close-foreground: rgba(0, 0, 0, 0.3);
+      --pet-bubble-close-shadow: 0 5.14px 10.29px rgba(0, 0, 0, 0.1);
+      --pet-bubble-send-background: #fff;
+      --pet-bubble-send-foreground: #25262b;
+      --pet-bubble-toggle-foreground: rgba(0, 0, 0, 0.6);
+      --pet-center-label: #25262b;
+    }
+    :root[data-theme='dark'] {
+      --pet-center-label: #f7f8fa;
+      --pet-bubble-subtext: #9a9ea7;
+      --pet-bubble-progress-text: #e3e3e3;
+      --pet-bubble-icon-complete: #1783ff;
+      --pet-bubble-icon-complete-bg: #1c2a3d;
+      --pet-bubble-icon-error: #ff453a;
+      --pet-bubble-icon-error-bg: color-mix(in srgb, #ff453a 14%, transparent);
+      --pet-bubble-icon-action: #e3e3e6;
+      --pet-bubble-icon-action-bg: #3a3a3c;
+      --pet-bubble-card-background: rgba(41, 41, 41, 0.9);
+      --pet-bubble-card-border: rgba(255, 255, 255, 0.12);
+      --pet-bubble-card-shadow: 0 4px 16.4px 0 rgba(0, 0, 0, 0.1);
+      --pet-bubble-card-backdrop: blur(3px);
+      --pet-bubble-card-text: #f7f8fa;
+      --pet-bubble-close-background: #2c2c2e;
+      --pet-bubble-close-background-hover: #3a3a3c;
+      --pet-bubble-toggle-background-hover: #3f3f42;
+      --pet-bubble-close-foreground: color-mix(in srgb, var(--pet-bubble-card-text) 60%, transparent);
+      --pet-bubble-close-shadow: 0 4px 16.4px 0 rgba(0, 0, 0, 0.1);
+      --pet-bubble-send-background: #f5f5f7;
+      --pet-bubble-send-foreground: #1c1c1e;
+      --pet-bubble-toggle-foreground: rgba(255, 255, 255, 0.6);
+    }
+    #conversation-bubble {
+      position: absolute;
+      z-index: 2;
+      top: auto;
+      bottom: 0;
+      left: 50%;
+      display: block;
+      width: min(320px, calc(100% - 24px));
+      max-height: min(460px, calc(100% - 24px));
+      overflow: visible;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      color: var(--pet-center-label);
+      pointer-events: none;
+      opacity: 0;
+      transform: translate(-50%, 8px) scale(0.96);
+      transform-origin: 50% 100%;
+      transition:
+        opacity 180ms cubic-bezier(0.22, 1, 0.36, 1),
+        transform 420ms cubic-bezier(0.16, 1, 0.3, 1);
+      visibility: hidden;
+      isolation: isolate;
+    }
+    #conversation-bubble[data-placement='below'] {
+      transform-origin: 50% 0%;
+    }
+    #conversation-center-header {
+      position: absolute;
+      z-index: 2;
+      right: 2px;
+      bottom: calc(100% + 8px);
+      display: block;
+      margin: 0;
+      color: var(--pet-center-label);
+    }
+    #conversation-center-header[hidden],
+    .conversation-card[hidden] { display: none !important; }
+    #conversation-center-clear-all {
+      all: unset;
+      display: grid;
+      box-sizing: border-box;
+      height: 24px;
+      place-items: center;
+      border: 0.5px solid var(--pet-bubble-card-border);
+      border-radius: 999px;
+      padding: 0 12px;
+      background: var(--pet-bubble-card-background);
+      box-shadow: var(--pet-bubble-card-shadow);
+      backdrop-filter: var(--pet-bubble-card-backdrop);
+      -webkit-backdrop-filter: var(--pet-bubble-card-backdrop);
+      color: var(--pet-bubble-card-text);
+      font: 500 11px/1.3 system-ui, sans-serif;
+      cursor: url("data:image/svg+xml,%3Csvg width%3D%2229%22 height%3D%2230%22 viewBox%3D%220 0 29 30%22 fill%3D%22none%22 xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%3E%0A%3Cg filter%3D%22url(%23filter0_d_9286_12946)%22%3E%0A%3Cpath fill-rule%3D%22evenodd%22 clip-rule%3D%22evenodd%22 d%3D%22M9.64784 20.0061C9.09698 19.5962 8.31215 18.6667 7.07662 17.6141C6.37674 17.019 4.75792 15.979 4.19843 15.3804C3.70995 14.8498 3.67057 14.5637 3.61031 14.0317C3.5027 13.0853 4.24594 12.1268 5.26695 11.9557C6.03795 11.8252 6.80862 12.1513 7.50817 12.467C7.93016 12.6568 8.50327 13.0918 8.8428 13.3331C9.15506 13.5538 9.24447 13.6556 9.58664 13.9242C10.0391 14.2797 10.2024 14.472 9.94368 14.0165C9.64825 13.3254 9.15135 12.1432 8.61715 11.1232C8.21118 10.3499 8.13171 10.233 7.78568 9.64867C7.41863 9.02646 7.19683 8.5812 6.83051 7.91532C6.5737 7.44372 6.07889 6.47218 5.86419 5.90854C5.56924 5.13813 5.17948 3.85737 5.52886 3.12706C5.80268 2.5552 6.67928 2.16969 7.32266 2.30477C8.16504 2.48126 8.87551 3.44626 9.18352 3.82494C9.73712 4.50586 10.1911 5.34237 10.6925 6.46589C11.3303 7.89602 12.3235 9.85214 12.4548 10.2844C12.3463 9.74041 11.9114 8.65034 11.8667 8.11259C11.8261 7.62498 12.0725 6.97972 12.523 6.70216C12.9044 6.46797 13.3777 6.293 13.8288 6.26686C14.3072 6.23807 14.8723 6.43451 15.1324 6.69247C15.8991 7.45604 16.4043 9.30065 16.3996 9.1963C16.3782 8.61813 16.0253 7.38806 16.1961 6.79101C16.3081 6.39762 16.7435 5.9533 17.0056 5.83028C17.4114 5.6408 17.9282 5.47746 18.3992 5.44443C18.779 5.41876 19.3822 5.7168 19.5692 5.88721C20.0186 6.301 20.576 7.66262 20.762 8.14233C20.8384 8.3408 20.717 7.54564 20.9008 6.9622C21.2409 5.87874 23.2748 5.14119 23.8988 7.15118C24.1889 8.08905 24.1701 8.04752 24.3409 8.68503C24.5416 9.43411 24.6449 9.88937 24.7496 10.4421C24.8599 11.0337 25.0863 12.3769 25.0752 13.06C25.0675 13.5295 24.9174 14.6211 24.6679 15.3184C24.6679 15.3184 23.597 17.5465 23.6461 18.4076C23.6933 19.2677 23.7514 19.2584 23.873 19.8454C23.9941 20.431 24.4062 21.1343 24.4062 21.1343C24.4062 21.1343 23.2846 21.5964 22.6319 21.6641C22.0409 21.7246 21.0376 20.7853 20.7641 20.489C20.3875 20.0805 19.8803 20.3143 19.767 20.7204C19.5897 21.3627 19.1552 22.546 18.6763 22.7411C17.7411 23.1221 15.7124 23.5834 14.136 23.9887C14.136 23.9887 14.0116 22.452 13.2799 22.1092C12.7375 21.8524 11.773 21.2955 11.2109 21.0175L9.64784 20.0061Z%22 fill%3D%22white%22%2F%3E%0A%3C%2Fg%3E%0A%3Cpath fill-rule%3D%22evenodd%22 clip-rule%3D%22evenodd%22 d%3D%22M9.64784 20.0061C9.09698 19.5962 8.31215 18.6667 7.07662 17.6141C6.37674 17.019 4.75792 15.979 4.19843 15.3804C3.70995 14.8498 3.67057 14.5637 3.61031 14.0317C3.5027 13.0853 4.24594 12.1268 5.26695 11.9557C6.03795 11.8252 6.80862 12.1513 7.50817 12.467C7.93016 12.6568 8.50327 13.0918 8.8428 13.3331C9.15506 13.5538 9.24447 13.6556 9.58664 13.9242C10.0391 14.2797 10.2024 14.472 9.94368 14.0165C9.64825 13.3254 9.15135 12.1432 8.61715 11.1232C8.21118 10.3499 8.13171 10.233 7.78568 9.64867C7.41863 9.02647 7.19683 8.5812 6.83051 7.91532C6.5737 7.44372 6.07889 6.47218 5.86419 5.90854C5.56924 5.13813 5.17948 3.85737 5.52886 3.12706C5.80268 2.5552 6.67928 2.16969 7.32266 2.30477C8.16504 2.48126 8.87551 3.44626 9.18352 3.82494C9.73712 4.50586 10.1911 5.34237 10.6925 6.46589C11.3303 7.89602 12.3235 9.85214 12.4548 10.2844C12.3463 9.74041 11.9114 8.65034 11.8667 8.11259C11.8261 7.62498 12.0725 6.97972 12.523 6.70216C12.9044 6.46797 13.3777 6.293 13.8288 6.26686C14.3072 6.23807 14.8723 6.43451 15.1324 6.69247C15.8991 7.45604 16.4043 9.30065 16.3996 9.1963C16.3782 8.61813 16.0253 7.38806 16.1961 6.79101C16.3081 6.39762 16.7435 5.9533 17.0056 5.83028C17.4114 5.6408 17.9282 5.47746 18.3992 5.44443C18.779 5.41876 19.3822 5.7168 19.5692 5.88721C20.0186 6.301 20.576 7.66262 20.762 8.14233C20.8384 8.3408 20.717 7.54564 20.9008 6.9622C21.2409 5.87874 23.2748 5.14119 23.8988 7.15118C24.1889 8.08905 24.1701 8.04752 24.3409 8.68503C24.5416 9.43411 24.6449 9.88937 24.7496 10.4421C24.8599 11.0337 25.0863 12.3769 25.0752 13.06C25.0675 13.5295 24.9174 14.6211 24.6679 15.3184C24.6679 15.3184 23.597 17.5465 23.6461 18.4076C23.6933 19.2677 23.7514 19.2584 23.873 19.8454C23.9941 20.431 24.4062 21.1343 24.4062 21.1343C24.4062 21.1343 23.2846 21.5964 22.6319 21.6641C22.0409 21.7246 21.0376 20.7853 20.7641 20.489C20.3875 20.0805 19.8803 20.3143 19.767 20.7204C19.5897 21.3627 19.1552 22.546 18.6763 22.7411C17.7411 23.1221 15.7123 23.5834 14.136 23.9887C14.136 23.9887 14.0116 22.4521 13.2799 22.1092C12.7375 21.8524 11.773 21.2955 11.2109 21.0175L9.64784 20.0061Z%22 stroke%3D%22black%22 stroke-width%3D%221.125%22 stroke-linecap%3D%22round%22 stroke-linejoin%3D%22round%22%2F%3E%0A%3Cpath d%3D%22M21.7169 17.3227L20.374 12.311%22 stroke%3D%22black%22 stroke-width%3D%221.125%22 stroke-linecap%3D%22round%22%2F%3E%0A%3Cpath d%3D%22M18.8011 18.1222L17.4296 13.0964%22 stroke%3D%22black%22 stroke-width%3D%221.125%22 stroke-linecap%3D%22round%22%2F%3E%0A%3Cpath d%3D%22M14.5729 13.9109L15.9334 18.8666%22 stroke%3D%22black%22 stroke-width%3D%221.125%22 stroke-linecap%3D%22round%22%2F%3E%0A%3Cdefs%3E%0A%3Cfilter id%3D%22filter0_d_9286_12946%22 x%3D%22-2.43187e-05%22 y%3D%220.677588%22 width%3D%2228.6757%22 height%3D%2228.9112%22 filterUnits%3D%22userSpaceOnUse%22 color-interpolation-filters%3D%22sRGB%22%3E%0A%3CfeFlood flood-opacity%3D%220%22 result%3D%22BackgroundImageFix%22%2F%3E%0A%3CfeColorMatrix in%3D%22SourceAlpha%22 type%3D%22matrix%22 values%3D%220 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0%22 result%3D%22hardAlpha%22%2F%3E%0A%3CfeOffset dy%3D%222%22%2F%3E%0A%3CfeGaussianBlur stdDeviation%3D%221.8%22%2F%3E%0A%3CfeComposite in2%3D%22hardAlpha%22 operator%3D%22out%22%2F%3E%0A%3CfeColorMatrix type%3D%22matrix%22 values%3D%220 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.65 0%22%2F%3E%0A%3CfeBlend mode%3D%22normal%22 in2%3D%22BackgroundImageFix%22 result%3D%22effect1_dropShadow_9286_12946%22%2F%3E%0A%3CfeBlend mode%3D%22normal%22 in%3D%22SourceGraphic%22 in2%3D%22effect1_dropShadow_9286_12946%22 result%3D%22shape%22%2F%3E%0A%3C%2Ffilter%3E%0A%3C%2Fdefs%3E%0A%3C%2Fsvg%3E") 6 2, pointer;
+    }
+    #conversation-center-clear-all:hover {
+      color: var(--pet-bubble-text);
+    }
+    .keyboard-navigation #conversation-center-clear-all:focus-visible,
+    .keyboard-navigation .conversation-card:focus-visible {
+      outline: 2px solid color-mix(in srgb, var(--pet-bubble-text) 56%, transparent);
+      outline-offset: 2px;
+    }
+    #conversation-list {
+      /* Keep card shadows inside the scroll clip without moving the cards. */
+      padding: 12px;
+      margin: -12px;
+      position: relative;
+      isolation: isolate;
+    }
+    #conversation-list {
+      max-height: var(--pet-conversation-list-max-height, 380px);
+      overflow-x: hidden;
+      overflow-y: auto;
+      scrollbar-width: none;
+    }
+    #conversation-bubble.notification-expanded #conversation-list {
+      overflow-x: hidden;
+      overflow-y: auto;
+      overscroll-behavior-y: contain;
+      scrollbar-width: none;
+      mask-image: linear-gradient(
+        to bottom,
+        transparent 0,
+        #000 var(--pet-list-fade-top, 0px),
+        #000 calc(100% - var(--pet-list-fade-bottom, 0px)),
+        transparent 100%
+      );
+      -webkit-mask-image: linear-gradient(
+        to bottom,
+        transparent 0,
+        #000 var(--pet-list-fade-top, 0px),
+        #000 calc(100% - var(--pet-list-fade-bottom, 0px)),
+        transparent 100%
+      );
+    }
+    #conversation-bubble.notification-expanded #conversation-list::-webkit-scrollbar {
+      display: none;
+      width: 0;
+      height: 0;
+    }
+    /* 叠放态的假卡层是 #conversation-bubble 的兄弟层:气泡 section 整体
+       z-index 2 压在 three canvas 上,假层若留在气泡内( ::before/::after )
+       会随气泡一起挡住呼吸浮动的球。拆成 z-index auto 的兄弟层后按 DOM
+       序画在 canvas 之下,主卡/close 浮层仍在球之上。几何由 controller 的
+       syncStackLayers 跟随主卡(低 5px、每侧内缩 12px,视觉与原 ::before
+       一致);transform 形成 stacking context,深层 ::before 的负 z-index
+       不会掉到 canvas 后面之外的层级。 */
+    #conversation-stack-layers {
+      position: absolute;
+      display: none;
+      left: 50%;
+      width: calc(min(320px, 100% - 24px) - 24px);
+      border: 0.5px solid var(--pet-bubble-card-border);
+      border-radius: 20px;
+      background: color-mix(
+        in srgb,
+        var(--pet-bubble-text) 7%,
+        var(--pet-bubble-card-background)
+      );
+      box-shadow: var(--pet-bubble-card-shadow);
+      opacity: 0.94;
+      pointer-events: none;
+      transform: translateX(-50%) scale(0.96);
+      transform-origin: 50% 100%;
+    }
+    /* count/隐藏态 stage 没有 bubble-visible,假层随气泡一起隐藏 */
+    #stage.bubble-visible
+      #conversation-bubble.notification-collapsed.has-multiple
+      ~ #conversation-stack-layers {
+      display: block;
+    }
+    #conversation-stack-layers::before {
+      position: absolute;
+      z-index: -1;
+      inset: 0 12px -4px;
+      display: none;
+      border: 0.5px solid var(--pet-bubble-card-border);
+      border-radius: 20px;
+      background: color-mix(
+        in srgb,
+        var(--pet-bubble-text) 7%,
+        var(--pet-bubble-card-background)
+      );
+      box-shadow: var(--pet-bubble-card-shadow);
+      content: '';
+      opacity: 0.72;
+      transform: scale(0.9583);
+      transform-origin: 50% 100%;
+    }
+    #stage.bubble-visible
+      #conversation-bubble.notification-collapsed.has-many
+      ~ #conversation-stack-layers::before {
+      display: block;
+    }
+    .conversation-card {
+      appearance: none;
+      -webkit-appearance: none;
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      width: 100%;
+      overflow: visible;
+      border: 0.5px solid var(--pet-bubble-card-border);
+      border-radius: 20px;
+      padding: 10px 12px;
+      background: var(--pet-bubble-card-background);
+      box-shadow: var(--pet-bubble-card-shadow);
+      backdrop-filter: var(--pet-bubble-card-backdrop);
+      -webkit-backdrop-filter: var(--pet-bubble-card-backdrop);
+      color: var(--pet-bubble-text);
+      text-align: left;
+      cursor: url("data:image/svg+xml,%3Csvg width%3D%2229%22 height%3D%2230%22 viewBox%3D%220 0 29 30%22 fill%3D%22none%22 xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%3E%0A%3Cg filter%3D%22url(%23filter0_d_9286_12946)%22%3E%0A%3Cpath fill-rule%3D%22evenodd%22 clip-rule%3D%22evenodd%22 d%3D%22M9.64784 20.0061C9.09698 19.5962 8.31215 18.6667 7.07662 17.6141C6.37674 17.019 4.75792 15.979 4.19843 15.3804C3.70995 14.8498 3.67057 14.5637 3.61031 14.0317C3.5027 13.0853 4.24594 12.1268 5.26695 11.9557C6.03795 11.8252 6.80862 12.1513 7.50817 12.467C7.93016 12.6568 8.50327 13.0918 8.8428 13.3331C9.15506 13.5538 9.24447 13.6556 9.58664 13.9242C10.0391 14.2797 10.2024 14.472 9.94368 14.0165C9.64825 13.3254 9.15135 12.1432 8.61715 11.1232C8.21118 10.3499 8.13171 10.233 7.78568 9.64867C7.41863 9.02646 7.19683 8.5812 6.83051 7.91532C6.5737 7.44372 6.07889 6.47218 5.86419 5.90854C5.56924 5.13813 5.17948 3.85737 5.52886 3.12706C5.80268 2.5552 6.67928 2.16969 7.32266 2.30477C8.16504 2.48126 8.87551 3.44626 9.18352 3.82494C9.73712 4.50586 10.1911 5.34237 10.6925 6.46589C11.3303 7.89602 12.3235 9.85214 12.4548 10.2844C12.3463 9.74041 11.9114 8.65034 11.8667 8.11259C11.8261 7.62498 12.0725 6.97972 12.523 6.70216C12.9044 6.46797 13.3777 6.293 13.8288 6.26686C14.3072 6.23807 14.8723 6.43451 15.1324 6.69247C15.8991 7.45604 16.4043 9.30065 16.3996 9.1963C16.3782 8.61813 16.0253 7.38806 16.1961 6.79101C16.3081 6.39762 16.7435 5.9533 17.0056 5.83028C17.4114 5.6408 17.9282 5.47746 18.3992 5.44443C18.779 5.41876 19.3822 5.7168 19.5692 5.88721C20.0186 6.301 20.576 7.66262 20.762 8.14233C20.8384 8.3408 20.717 7.54564 20.9008 6.9622C21.2409 5.87874 23.2748 5.14119 23.8988 7.15118C24.1889 8.08905 24.1701 8.04752 24.3409 8.68503C24.5416 9.43411 24.6449 9.88937 24.7496 10.4421C24.8599 11.0337 25.0863 12.3769 25.0752 13.06C25.0675 13.5295 24.9174 14.6211 24.6679 15.3184C24.6679 15.3184 23.597 17.5465 23.6461 18.4076C23.6933 19.2677 23.7514 19.2584 23.873 19.8454C23.9941 20.431 24.4062 21.1343 24.4062 21.1343C24.4062 21.1343 23.2846 21.5964 22.6319 21.6641C22.0409 21.7246 21.0376 20.7853 20.7641 20.489C20.3875 20.0805 19.8803 20.3143 19.767 20.7204C19.5897 21.3627 19.1552 22.546 18.6763 22.7411C17.7411 23.1221 15.7124 23.5834 14.136 23.9887C14.136 23.9887 14.0116 22.452 13.2799 22.1092C12.7375 21.8524 11.773 21.2955 11.2109 21.0175L9.64784 20.0061Z%22 fill%3D%22white%22%2F%3E%0A%3C%2Fg%3E%0A%3Cpath fill-rule%3D%22evenodd%22 clip-rule%3D%22evenodd%22 d%3D%22M9.64784 20.0061C9.09698 19.5962 8.31215 18.6667 7.07662 17.6141C6.37674 17.019 4.75792 15.979 4.19843 15.3804C3.70995 14.8498 3.67057 14.5637 3.61031 14.0317C3.5027 13.0853 4.24594 12.1268 5.26695 11.9557C6.03795 11.8252 6.80862 12.1513 7.50817 12.467C7.93016 12.6568 8.50327 13.0918 8.8428 13.3331C9.15506 13.5538 9.24447 13.6556 9.58664 13.9242C10.0391 14.2797 10.2024 14.472 9.94368 14.0165C9.64825 13.3254 9.15135 12.1432 8.61715 11.1232C8.21118 10.3499 8.13171 10.233 7.78568 9.64867C7.41863 9.02647 7.19683 8.5812 6.83051 7.91532C6.5737 7.44372 6.07889 6.47218 5.86419 5.90854C5.56924 5.13813 5.17948 3.85737 5.52886 3.12706C5.80268 2.5552 6.67928 2.16969 7.32266 2.30477C8.16504 2.48126 8.87551 3.44626 9.18352 3.82494C9.73712 4.50586 10.1911 5.34237 10.6925 6.46589C11.3303 7.89602 12.3235 9.85214 12.4548 10.2844C12.3463 9.74041 11.9114 8.65034 11.8667 8.11259C11.8261 7.62498 12.0725 6.97972 12.523 6.70216C12.9044 6.46797 13.3777 6.293 13.8288 6.26686C14.3072 6.23807 14.8723 6.43451 15.1324 6.69247C15.8991 7.45604 16.4043 9.30065 16.3996 9.1963C16.3782 8.61813 16.0253 7.38806 16.1961 6.79101C16.3081 6.39762 16.7435 5.9533 17.0056 5.83028C17.4114 5.6408 17.9282 5.47746 18.3992 5.44443C18.779 5.41876 19.3822 5.7168 19.5692 5.88721C20.0186 6.301 20.576 7.66262 20.762 8.14233C20.8384 8.3408 20.717 7.54564 20.9008 6.9622C21.2409 5.87874 23.2748 5.14119 23.8988 7.15118C24.1889 8.08905 24.1701 8.04752 24.3409 8.68503C24.5416 9.43411 24.6449 9.88937 24.7496 10.4421C24.8599 11.0337 25.0863 12.3769 25.0752 13.06C25.0675 13.5295 24.9174 14.6211 24.6679 15.3184C24.6679 15.3184 23.597 17.5465 23.6461 18.4076C23.6933 19.2677 23.7514 19.2584 23.873 19.8454C23.9941 20.431 24.4062 21.1343 24.4062 21.1343C24.4062 21.1343 23.2846 21.5964 22.6319 21.6641C22.0409 21.7246 21.0376 20.7853 20.7641 20.489C20.3875 20.0805 19.8803 20.3143 19.767 20.7204C19.5897 21.3627 19.1552 22.546 18.6763 22.7411C17.7411 23.1221 15.7123 23.5834 14.136 23.9887C14.136 23.9887 14.0116 22.4521 13.2799 22.1092C12.7375 21.8524 11.773 21.2955 11.2109 21.0175L9.64784 20.0061Z%22 stroke%3D%22black%22 stroke-width%3D%221.125%22 stroke-linecap%3D%22round%22 stroke-linejoin%3D%22round%22%2F%3E%0A%3Cpath d%3D%22M21.7169 17.3227L20.374 12.311%22 stroke%3D%22black%22 stroke-width%3D%221.125%22 stroke-linecap%3D%22round%22%2F%3E%0A%3Cpath d%3D%22M18.8011 18.1222L17.4296 13.0964%22 stroke%3D%22black%22 stroke-width%3D%221.125%22 stroke-linecap%3D%22round%22%2F%3E%0A%3Cpath d%3D%22M14.5729 13.9109L15.9334 18.8666%22 stroke%3D%22black%22 stroke-width%3D%221.125%22 stroke-linecap%3D%22round%22%2F%3E%0A%3Cdefs%3E%0A%3Cfilter id%3D%22filter0_d_9286_12946%22 x%3D%22-2.43187e-05%22 y%3D%220.677588%22 width%3D%2228.6757%22 height%3D%2228.9112%22 filterUnits%3D%22userSpaceOnUse%22 color-interpolation-filters%3D%22sRGB%22%3E%0A%3CfeFlood flood-opacity%3D%220%22 result%3D%22BackgroundImageFix%22%2F%3E%0A%3CfeColorMatrix in%3D%22SourceAlpha%22 type%3D%22matrix%22 values%3D%220 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0%22 result%3D%22hardAlpha%22%2F%3E%0A%3CfeOffset dy%3D%222%22%2F%3E%0A%3CfeGaussianBlur stdDeviation%3D%221.8%22%2F%3E%0A%3CfeComposite in2%3D%22hardAlpha%22 operator%3D%22out%22%2F%3E%0A%3CfeColorMatrix type%3D%22matrix%22 values%3D%220 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.65 0%22%2F%3E%0A%3CfeBlend mode%3D%22normal%22 in2%3D%22BackgroundImageFix%22 result%3D%22effect1_dropShadow_9286_12946%22%2F%3E%0A%3CfeBlend mode%3D%22normal%22 in%3D%22SourceGraphic%22 in2%3D%22effect1_dropShadow_9286_12946%22 result%3D%22shape%22%2F%3E%0A%3C%2Ffilter%3E%0A%3C%2Fdefs%3E%0A%3C%2Fsvg%3E") 6 2, pointer;
+      contain: layout style;
+      transform: translateZ(0);
+      transform-origin: 50% 50%;
+      transition:
+        box-shadow 280ms cubic-bezier(0.22, 1, 0.36, 1),
+        background-color 280ms cubic-bezier(0.22, 1, 0.36, 1);
+    }
+    .conversation-card + .conversation-card {
+      margin-top: 8px;
+    }
+    .conversation-card:hover,
+    .conversation-card:focus-visible {
+      background: color-mix(
+        in srgb,
+        var(--pet-bubble-card-background) 94%,
+        var(--pet-bubble-card-text) 6%
+      ) !important;
+      box-shadow: 0 4px 10px rgba(31, 35, 41, 0.14);
+    }
+    .conversation-card-main {
+      display: flex;
+      align-items: center;
+      min-width: 0;
+    }
+    .conversation-card-text {
+      display: flex;
+      flex: 1 1 auto;
+      flex-direction: column;
+      gap: 4px;
+      min-width: 0;
+    }
+    .conversation-card-title {
+      display: block;
+      min-width: 0;
+      overflow: hidden;
+      color: var(--pet-bubble-card-text);
+      font: 600 13px/1.35 system-ui, sans-serif;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .conversation-card-status-icon {
+      display: none;
+      flex: none;
+      align-items: center;
+      justify-content: center;
+      gap: 2px;
+      width: 30px;
+      height: 30px;
+      /* 兜底 widget 基础样式 button{min-block-size:32px} 会把 30x30 撑成竖椭圆 */
+      min-height: 0;
+      margin-left: 4px;
+      border: 0;
+      border-radius: 50%;
+      padding: 0;
+      color: var(--pet-bubble-icon-complete);
+      cursor: url("data:image/svg+xml,%3Csvg width%3D%2229%22 height%3D%2230%22 viewBox%3D%220 0 29 30%22 fill%3D%22none%22 xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%3E%0A%3Cg filter%3D%22url(%23filter0_d_9286_12946)%22%3E%0A%3Cpath fill-rule%3D%22evenodd%22 clip-rule%3D%22evenodd%22 d%3D%22M9.64784 20.0061C9.09698 19.5962 8.31215 18.6667 7.07662 17.6141C6.37674 17.019 4.75792 15.979 4.19843 15.3804C3.70995 14.8498 3.67057 14.5637 3.61031 14.0317C3.5027 13.0853 4.24594 12.1268 5.26695 11.9557C6.03795 11.8252 6.80862 12.1513 7.50817 12.467C7.93016 12.6568 8.50327 13.0918 8.8428 13.3331C9.15506 13.5538 9.24447 13.6556 9.58664 13.9242C10.0391 14.2797 10.2024 14.472 9.94368 14.0165C9.64825 13.3254 9.15135 12.1432 8.61715 11.1232C8.21118 10.3499 8.13171 10.233 7.78568 9.64867C7.41863 9.02646 7.19683 8.5812 6.83051 7.91532C6.5737 7.44372 6.07889 6.47218 5.86419 5.90854C5.56924 5.13813 5.17948 3.85737 5.52886 3.12706C5.80268 2.5552 6.67928 2.16969 7.32266 2.30477C8.16504 2.48126 8.87551 3.44626 9.18352 3.82494C9.73712 4.50586 10.1911 5.34237 10.6925 6.46589C11.3303 7.89602 12.3235 9.85214 12.4548 10.2844C12.3463 9.74041 11.9114 8.65034 11.8667 8.11259C11.8261 7.62498 12.0725 6.97972 12.523 6.70216C12.9044 6.46797 13.3777 6.293 13.8288 6.26686C14.3072 6.23807 14.8723 6.43451 15.1324 6.69247C15.8991 7.45604 16.4043 9.30065 16.3996 9.1963C16.3782 8.61813 16.0253 7.38806 16.1961 6.79101C16.3081 6.39762 16.7435 5.9533 17.0056 5.83028C17.4114 5.6408 17.9282 5.47746 18.3992 5.44443C18.779 5.41876 19.3822 5.7168 19.5692 5.88721C20.0186 6.301 20.576 7.66262 20.762 8.14233C20.8384 8.3408 20.717 7.54564 20.9008 6.9622C21.2409 5.87874 23.2748 5.14119 23.8988 7.15118C24.1889 8.08905 24.1701 8.04752 24.3409 8.68503C24.5416 9.43411 24.6449 9.88937 24.7496 10.4421C24.8599 11.0337 25.0863 12.3769 25.0752 13.06C25.0675 13.5295 24.9174 14.6211 24.6679 15.3184C24.6679 15.3184 23.597 17.5465 23.6461 18.4076C23.6933 19.2677 23.7514 19.2584 23.873 19.8454C23.9941 20.431 24.4062 21.1343 24.4062 21.1343C24.4062 21.1343 23.2846 21.5964 22.6319 21.6641C22.0409 21.7246 21.0376 20.7853 20.7641 20.489C20.3875 20.0805 19.8803 20.3143 19.767 20.7204C19.5897 21.3627 19.1552 22.546 18.6763 22.7411C17.7411 23.1221 15.7124 23.5834 14.136 23.9887C14.136 23.9887 14.0116 22.452 13.2799 22.1092C12.7375 21.8524 11.773 21.2955 11.2109 21.0175L9.64784 20.0061Z%22 fill%3D%22white%22%2F%3E%0A%3C%2Fg%3E%0A%3Cpath fill-rule%3D%22evenodd%22 clip-rule%3D%22evenodd%22 d%3D%22M9.64784 20.0061C9.09698 19.5962 8.31215 18.6667 7.07662 17.6141C6.37674 17.019 4.75792 15.979 4.19843 15.3804C3.70995 14.8498 3.67057 14.5637 3.61031 14.0317C3.5027 13.0853 4.24594 12.1268 5.26695 11.9557C6.03795 11.8252 6.80862 12.1513 7.50817 12.467C7.93016 12.6568 8.50327 13.0918 8.8428 13.3331C9.15506 13.5538 9.24447 13.6556 9.58664 13.9242C10.0391 14.2797 10.2024 14.472 9.94368 14.0165C9.64825 13.3254 9.15135 12.1432 8.61715 11.1232C8.21118 10.3499 8.13171 10.233 7.78568 9.64867C7.41863 9.02647 7.19683 8.5812 6.83051 7.91532C6.5737 7.44372 6.07889 6.47218 5.86419 5.90854C5.56924 5.13813 5.17948 3.85737 5.52886 3.12706C5.80268 2.5552 6.67928 2.16969 7.32266 2.30477C8.16504 2.48126 8.87551 3.44626 9.18352 3.82494C9.73712 4.50586 10.1911 5.34237 10.6925 6.46589C11.3303 7.89602 12.3235 9.85214 12.4548 10.2844C12.3463 9.74041 11.9114 8.65034 11.8667 8.11259C11.8261 7.62498 12.0725 6.97972 12.523 6.70216C12.9044 6.46797 13.3777 6.293 13.8288 6.26686C14.3072 6.23807 14.8723 6.43451 15.1324 6.69247C15.8991 7.45604 16.4043 9.30065 16.3996 9.1963C16.3782 8.61813 16.0253 7.38806 16.1961 6.79101C16.3081 6.39762 16.7435 5.9533 17.0056 5.83028C17.4114 5.6408 17.9282 5.47746 18.3992 5.44443C18.779 5.41876 19.3822 5.7168 19.5692 5.88721C20.0186 6.301 20.576 7.66262 20.762 8.14233C20.8384 8.3408 20.717 7.54564 20.9008 6.9622C21.2409 5.87874 23.2748 5.14119 23.8988 7.15118C24.1889 8.08905 24.1701 8.04752 24.3409 8.68503C24.5416 9.43411 24.6449 9.88937 24.7496 10.4421C24.8599 11.0337 25.0863 12.3769 25.0752 13.06C25.0675 13.5295 24.9174 14.6211 24.6679 15.3184C24.6679 15.3184 23.597 17.5465 23.6461 18.4076C23.6933 19.2677 23.7514 19.2584 23.873 19.8454C23.9941 20.431 24.4062 21.1343 24.4062 21.1343C24.4062 21.1343 23.2846 21.5964 22.6319 21.6641C22.0409 21.7246 21.0376 20.7853 20.7641 20.489C20.3875 20.0805 19.8803 20.3143 19.767 20.7204C19.5897 21.3627 19.1552 22.546 18.6763 22.7411C17.7411 23.1221 15.7123 23.5834 14.136 23.9887C14.136 23.9887 14.0116 22.4521 13.2799 22.1092C12.7375 21.8524 11.773 21.2955 11.2109 21.0175L9.64784 20.0061Z%22 stroke%3D%22black%22 stroke-width%3D%221.125%22 stroke-linecap%3D%22round%22 stroke-linejoin%3D%22round%22%2F%3E%0A%3Cpath d%3D%22M21.7169 17.3227L20.374 12.311%22 stroke%3D%22black%22 stroke-width%3D%221.125%22 stroke-linecap%3D%22round%22%2F%3E%0A%3Cpath d%3D%22M18.8011 18.1222L17.4296 13.0964%22 stroke%3D%22black%22 stroke-width%3D%221.125%22 stroke-linecap%3D%22round%22%2F%3E%0A%3Cpath d%3D%22M14.5729 13.9109L15.9334 18.8666%22 stroke%3D%22black%22 stroke-width%3D%221.125%22 stroke-linecap%3D%22round%22%2F%3E%0A%3Cdefs%3E%0A%3Cfilter id%3D%22filter0_d_9286_12946%22 x%3D%22-2.43187e-05%22 y%3D%220.677588%22 width%3D%2228.6757%22 height%3D%2228.9112%22 filterUnits%3D%22userSpaceOnUse%22 color-interpolation-filters%3D%22sRGB%22%3E%0A%3CfeFlood flood-opacity%3D%220%22 result%3D%22BackgroundImageFix%22%2F%3E%0A%3CfeColorMatrix in%3D%22SourceAlpha%22 type%3D%22matrix%22 values%3D%220 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0%22 result%3D%22hardAlpha%22%2F%3E%0A%3CfeOffset dy%3D%222%22%2F%3E%0A%3CfeGaussianBlur stdDeviation%3D%221.8%22%2F%3E%0A%3CfeComposite in2%3D%22hardAlpha%22 operator%3D%22out%22%2F%3E%0A%3CfeColorMatrix type%3D%22matrix%22 values%3D%220 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.65 0%22%2F%3E%0A%3CfeBlend mode%3D%22normal%22 in2%3D%22BackgroundImageFix%22 result%3D%22effect1_dropShadow_9286_12946%22%2F%3E%0A%3CfeBlend mode%3D%22normal%22 in%3D%22SourceGraphic%22 in2%3D%22effect1_dropShadow_9286_12946%22 result%3D%22shape%22%2F%3E%0A%3C%2Ffilter%3E%0A%3C%2Fdefs%3E%0A%3C%2Fsvg%3E") 6 2, pointer;
+    }
+    .conversation-card-status-icon svg {
+      display: block;
+      width: 18px;
+      height: 18px;
+    }
+    .conversation-card[data-icon-kind='complete'] .conversation-card-status-icon {
+      display: flex;
+      background: var(--pet-bubble-icon-complete-bg);
+      color: var(--pet-bubble-icon-complete);
+    }
+    .conversation-card[data-icon-kind='info'] .conversation-card-status-icon {
+      display: flex;
+      background: var(--pet-bubble-icon-info-bg);
+      color: var(--pet-bubble-icon-info);
+    }
+    .conversation-card[data-icon-kind='error'] .conversation-card-status-icon {
+      display: flex;
+      background: var(--pet-bubble-icon-error-bg);
+      color: var(--pet-bubble-icon-error);
+    }
+    .conversation-card-body {
+      display: block;
+      overflow: hidden;
+      color: var(--pet-bubble-subtext);
+      font: 12px/1.4 system-ui, sans-serif;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    #conversation-close-layer {
+      position: absolute;
+      z-index: 3;
+      inset: 0;
+      overflow: visible;
+      pointer-events: none;
+    }
+    .conversation-card-error {
+      margin: 4px 0 0;
+      color: var(--pet-bubble-icon-error);
+      font: 500 11px/1.4 system-ui, sans-serif;
+    }
+    .conversation-card-error[hidden] { display: none !important; }
+    .conversation-bubble-close {
+      all: unset;
+      position: absolute;
+      display: grid;
+      box-sizing: border-box;
+      width: 20px;
+      height: 20px;
+      place-items: center;
+      border: 0.5px solid var(--pet-bubble-card-border);
+      border-radius: 50%;
+      padding: 0;
+      background: var(--pet-bubble-close-background);
+      box-shadow: var(--pet-bubble-close-shadow);
+      color: var(--pet-bubble-close-foreground);
+      cursor: url("data:image/svg+xml,%3Csvg width%3D%2229%22 height%3D%2230%22 viewBox%3D%220 0 29 30%22 fill%3D%22none%22 xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%3E%0A%3Cg filter%3D%22url(%23filter0_d_9286_12946)%22%3E%0A%3Cpath fill-rule%3D%22evenodd%22 clip-rule%3D%22evenodd%22 d%3D%22M9.64784 20.0061C9.09698 19.5962 8.31215 18.6667 7.07662 17.6141C6.37674 17.019 4.75792 15.979 4.19843 15.3804C3.70995 14.8498 3.67057 14.5637 3.61031 14.0317C3.5027 13.0853 4.24594 12.1268 5.26695 11.9557C6.03795 11.8252 6.80862 12.1513 7.50817 12.467C7.93016 12.6568 8.50327 13.0918 8.8428 13.3331C9.15506 13.5538 9.24447 13.6556 9.58664 13.9242C10.0391 14.2797 10.2024 14.472 9.94368 14.0165C9.64825 13.3254 9.15135 12.1432 8.61715 11.1232C8.21118 10.3499 8.13171 10.233 7.78568 9.64867C7.41863 9.02646 7.19683 8.5812 6.83051 7.91532C6.5737 7.44372 6.07889 6.47218 5.86419 5.90854C5.56924 5.13813 5.17948 3.85737 5.52886 3.12706C5.80268 2.5552 6.67928 2.16969 7.32266 2.30477C8.16504 2.48126 8.87551 3.44626 9.18352 3.82494C9.73712 4.50586 10.1911 5.34237 10.6925 6.46589C11.3303 7.89602 12.3235 9.85214 12.4548 10.2844C12.3463 9.74041 11.9114 8.65034 11.8667 8.11259C11.8261 7.62498 12.0725 6.97972 12.523 6.70216C12.9044 6.46797 13.3777 6.293 13.8288 6.26686C14.3072 6.23807 14.8723 6.43451 15.1324 6.69247C15.8991 7.45604 16.4043 9.30065 16.3996 9.1963C16.3782 8.61813 16.0253 7.38806 16.1961 6.79101C16.3081 6.39762 16.7435 5.9533 17.0056 5.83028C17.4114 5.6408 17.9282 5.47746 18.3992 5.44443C18.779 5.41876 19.3822 5.7168 19.5692 5.88721C20.0186 6.301 20.576 7.66262 20.762 8.14233C20.8384 8.3408 20.717 7.54564 20.9008 6.9622C21.2409 5.87874 23.2748 5.14119 23.8988 7.15118C24.1889 8.08905 24.1701 8.04752 24.3409 8.68503C24.5416 9.43411 24.6449 9.88937 24.7496 10.4421C24.8599 11.0337 25.0863 12.3769 25.0752 13.06C25.0675 13.5295 24.9174 14.6211 24.6679 15.3184C24.6679 15.3184 23.597 17.5465 23.6461 18.4076C23.6933 19.2677 23.7514 19.2584 23.873 19.8454C23.9941 20.431 24.4062 21.1343 24.4062 21.1343C24.4062 21.1343 23.2846 21.5964 22.6319 21.6641C22.0409 21.7246 21.0376 20.7853 20.7641 20.489C20.3875 20.0805 19.8803 20.3143 19.767 20.7204C19.5897 21.3627 19.1552 22.546 18.6763 22.7411C17.7411 23.1221 15.7124 23.5834 14.136 23.9887C14.136 23.9887 14.0116 22.452 13.2799 22.1092C12.7375 21.8524 11.773 21.2955 11.2109 21.0175L9.64784 20.0061Z%22 fill%3D%22white%22%2F%3E%0A%3C%2Fg%3E%0A%3Cpath fill-rule%3D%22evenodd%22 clip-rule%3D%22evenodd%22 d%3D%22M9.64784 20.0061C9.09698 19.5962 8.31215 18.6667 7.07662 17.6141C6.37674 17.019 4.75792 15.979 4.19843 15.3804C3.70995 14.8498 3.67057 14.5637 3.61031 14.0317C3.5027 13.0853 4.24594 12.1268 5.26695 11.9557C6.03795 11.8252 6.80862 12.1513 7.50817 12.467C7.93016 12.6568 8.50327 13.0918 8.8428 13.3331C9.15506 13.5538 9.24447 13.6556 9.58664 13.9242C10.0391 14.2797 10.2024 14.472 9.94368 14.0165C9.64825 13.3254 9.15135 12.1432 8.61715 11.1232C8.21118 10.3499 8.13171 10.233 7.78568 9.64867C7.41863 9.02647 7.19683 8.5812 6.83051 7.91532C6.5737 7.44372 6.07889 6.47218 5.86419 5.90854C5.56924 5.13813 5.17948 3.85737 5.52886 3.12706C5.80268 2.5552 6.67928 2.16969 7.32266 2.30477C8.16504 2.48126 8.87551 3.44626 9.18352 3.82494C9.73712 4.50586 10.1911 5.34237 10.6925 6.46589C11.3303 7.89602 12.3235 9.85214 12.4548 10.2844C12.3463 9.74041 11.9114 8.65034 11.8667 8.11259C11.8261 7.62498 12.0725 6.97972 12.523 6.70216C12.9044 6.46797 13.3777 6.293 13.8288 6.26686C14.3072 6.23807 14.8723 6.43451 15.1324 6.69247C15.8991 7.45604 16.4043 9.30065 16.3996 9.1963C16.3782 8.61813 16.0253 7.38806 16.1961 6.79101C16.3081 6.39762 16.7435 5.9533 17.0056 5.83028C17.4114 5.6408 17.9282 5.47746 18.3992 5.44443C18.779 5.41876 19.3822 5.7168 19.5692 5.88721C20.0186 6.301 20.576 7.66262 20.762 8.14233C20.8384 8.3408 20.717 7.54564 20.9008 6.9622C21.2409 5.87874 23.2748 5.14119 23.8988 7.15118C24.1889 8.08905 24.1701 8.04752 24.3409 8.68503C24.5416 9.43411 24.6449 9.88937 24.7496 10.4421C24.8599 11.0337 25.0863 12.3769 25.0752 13.06C25.0675 13.5295 24.9174 14.6211 24.6679 15.3184C24.6679 15.3184 23.597 17.5465 23.6461 18.4076C23.6933 19.2677 23.7514 19.2584 23.873 19.8454C23.9941 20.431 24.4062 21.1343 24.4062 21.1343C24.4062 21.1343 23.2846 21.5964 22.6319 21.6641C22.0409 21.7246 21.0376 20.7853 20.7641 20.489C20.3875 20.0805 19.8803 20.3143 19.767 20.7204C19.5897 21.3627 19.1552 22.546 18.6763 22.7411C17.7411 23.1221 15.7123 23.5834 14.136 23.9887C14.136 23.9887 14.0116 22.4521 13.2799 22.1092C12.7375 21.8524 11.773 21.2955 11.2109 21.0175L9.64784 20.0061Z%22 stroke%3D%22black%22 stroke-width%3D%221.125%22 stroke-linecap%3D%22round%22 stroke-linejoin%3D%22round%22%2F%3E%0A%3Cpath d%3D%22M21.7169 17.3227L20.374 12.311%22 stroke%3D%22black%22 stroke-width%3D%221.125%22 stroke-linecap%3D%22round%22%2F%3E%0A%3Cpath d%3D%22M18.8011 18.1222L17.4296 13.0964%22 stroke%3D%22black%22 stroke-width%3D%221.125%22 stroke-linecap%3D%22round%22%2F%3E%0A%3Cpath d%3D%22M14.5729 13.9109L15.9334 18.8666%22 stroke%3D%22black%22 stroke-width%3D%221.125%22 stroke-linecap%3D%22round%22%2F%3E%0A%3Cdefs%3E%0A%3Cfilter id%3D%22filter0_d_9286_12946%22 x%3D%22-2.43187e-05%22 y%3D%220.677588%22 width%3D%2228.6757%22 height%3D%2228.9112%22 filterUnits%3D%22userSpaceOnUse%22 color-interpolation-filters%3D%22sRGB%22%3E%0A%3CfeFlood flood-opacity%3D%220%22 result%3D%22BackgroundImageFix%22%2F%3E%0A%3CfeColorMatrix in%3D%22SourceAlpha%22 type%3D%22matrix%22 values%3D%220 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0%22 result%3D%22hardAlpha%22%2F%3E%0A%3CfeOffset dy%3D%222%22%2F%3E%0A%3CfeGaussianBlur stdDeviation%3D%221.8%22%2F%3E%0A%3CfeComposite in2%3D%22hardAlpha%22 operator%3D%22out%22%2F%3E%0A%3CfeColorMatrix type%3D%22matrix%22 values%3D%220 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.65 0%22%2F%3E%0A%3CfeBlend mode%3D%22normal%22 in2%3D%22BackgroundImageFix%22 result%3D%22effect1_dropShadow_9286_12946%22%2F%3E%0A%3CfeBlend mode%3D%22normal%22 in%3D%22SourceGraphic%22 in2%3D%22effect1_dropShadow_9286_12946%22 result%3D%22shape%22%2F%3E%0A%3C%2Ffilter%3E%0A%3C%2Fdefs%3E%0A%3C%2Fsvg%3E") 6 2, pointer;
+      pointer-events: auto;
+      transition:
+        background-color 150ms ease,
+        color 150ms ease,
+        transform 150ms ease;
+    }
+    .conversation-bubble-close[hidden] { display: none !important; }
+    .conversation-bubble-close svg {
+      display: block;
+      width: 20px;
+      height: 20px;
+    }
+    /* 兜底 widget 基础样式的 button:hover(背景洗成 5% 白,白底下等同隐形)要用
+       !important 压住;hover 反馈:底色换成可见灰底(glyph 从淡化转实),以元素
+       中心轻微放大(transform 不改布局与点击区域,按钮仍是 20px)。
+       浅色主题不能用 icon-action-bg(rgba 黑 3% 在白底上等于变透明)。 */
+    .conversation-bubble-close:hover,
+    .conversation-bubble-close:focus-visible {
+      background: var(--pet-bubble-close-background-hover) !important;
+      color: var(--pet-bubble-card-text);
+      transform: scale(1.08);
+    }
+    .conversation-bubble-close:active {
+      transform: scale(0.94);
+    }
+    .conversation-card[data-icon-kind='complete'] .conversation-card-status-icon:hover {
+      background: var(--pet-bubble-icon-complete-bg) !important;
+    }
+    .conversation-card[data-icon-kind='info'] .conversation-card-status-icon:hover {
+      background: var(--pet-bubble-icon-info-bg) !important;
+    }
+    .conversation-card[data-icon-kind='error'] .conversation-card-status-icon:hover {
+      background: var(--pet-bubble-icon-error-bg) !important;
+    }
+    .conversation-card-reply:hover {
+      background: var(--pet-bubble-icon-action-bg) !important;
+      color: var(--pet-bubble-text);
+    }
+    .conversation-card-reply-send:hover {
+      background: var(--pet-bubble-icon-action-bg) !important;
+    }
+    #conversation-center-clear-all:hover {
+      background: var(--pet-bubble-card-background) !important;
+    }
+    /* hover 反馈:底色提亮 + 以元素中心放大(不动 left/top/宽高,
+       不触发 layout 与 hit region 重算);节奏对齐 kimi-pet hover(150ms 起)。 */
+    #conversation-bubble-toggle {
+      transition:
+        transform 160ms cubic-bezier(0.22, 1, 0.36, 1),
+        background-color 160ms ease;
+    }
+    #conversation-bubble-toggle:hover {
+      background: var(--pet-bubble-toggle-background-hover) !important;
+      transform: scale(1.1);
+    }
+    .keyboard-navigation .conversation-bubble-close:focus-visible {
+      outline: 2px solid color-mix(in srgb, var(--pet-bubble-text) 56%, transparent);
+      outline-offset: 1px;
+    }
+    .conversation-card-reply {
+      all: unset;
+      display: grid;
+      flex: none;
+      box-sizing: border-box;
+      /* 未 hover 时收成 0 宽不占位,文字用满全宽;hover 展开时文字同步缩短让位 */
+      width: 0;
+      height: 30px;
+      margin-left: 0;
+      place-items: center;
+      border: 0;
+      border-radius: 50%;
+      padding: 0;
+      background: var(--pet-bubble-icon-action-bg);
+      color: var(--pet-bubble-icon-action);
+      cursor: url("data:image/svg+xml,%3Csvg width%3D%2229%22 height%3D%2230%22 viewBox%3D%220 0 29 30%22 fill%3D%22none%22 xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%3E%0A%3Cg filter%3D%22url(%23filter0_d_9286_12946)%22%3E%0A%3Cpath fill-rule%3D%22evenodd%22 clip-rule%3D%22evenodd%22 d%3D%22M9.64784 20.0061C9.09698 19.5962 8.31215 18.6667 7.07662 17.6141C6.37674 17.019 4.75792 15.979 4.19843 15.3804C3.70995 14.8498 3.67057 14.5637 3.61031 14.0317C3.5027 13.0853 4.24594 12.1268 5.26695 11.9557C6.03795 11.8252 6.80862 12.1513 7.50817 12.467C7.93016 12.6568 8.50327 13.0918 8.8428 13.3331C9.15506 13.5538 9.24447 13.6556 9.58664 13.9242C10.0391 14.2797 10.2024 14.472 9.94368 14.0165C9.64825 13.3254 9.15135 12.1432 8.61715 11.1232C8.21118 10.3499 8.13171 10.233 7.78568 9.64867C7.41863 9.02646 7.19683 8.5812 6.83051 7.91532C6.5737 7.44372 6.07889 6.47218 5.86419 5.90854C5.56924 5.13813 5.17948 3.85737 5.52886 3.12706C5.80268 2.5552 6.67928 2.16969 7.32266 2.30477C8.16504 2.48126 8.87551 3.44626 9.18352 3.82494C9.73712 4.50586 10.1911 5.34237 10.6925 6.46589C11.3303 7.89602 12.3235 9.85214 12.4548 10.2844C12.3463 9.74041 11.9114 8.65034 11.8667 8.11259C11.8261 7.62498 12.0725 6.97972 12.523 6.70216C12.9044 6.46797 13.3777 6.293 13.8288 6.26686C14.3072 6.23807 14.8723 6.43451 15.1324 6.69247C15.8991 7.45604 16.4043 9.30065 16.3996 9.1963C16.3782 8.61813 16.0253 7.38806 16.1961 6.79101C16.3081 6.39762 16.7435 5.9533 17.0056 5.83028C17.4114 5.6408 17.9282 5.47746 18.3992 5.44443C18.779 5.41876 19.3822 5.7168 19.5692 5.88721C20.0186 6.301 20.576 7.66262 20.762 8.14233C20.8384 8.3408 20.717 7.54564 20.9008 6.9622C21.2409 5.87874 23.2748 5.14119 23.8988 7.15118C24.1889 8.08905 24.1701 8.04752 24.3409 8.68503C24.5416 9.43411 24.6449 9.88937 24.7496 10.4421C24.8599 11.0337 25.0863 12.3769 25.0752 13.06C25.0675 13.5295 24.9174 14.6211 24.6679 15.3184C24.6679 15.3184 23.597 17.5465 23.6461 18.4076C23.6933 19.2677 23.7514 19.2584 23.873 19.8454C23.9941 20.431 24.4062 21.1343 24.4062 21.1343C24.4062 21.1343 23.2846 21.5964 22.6319 21.6641C22.0409 21.7246 21.0376 20.7853 20.7641 20.489C20.3875 20.0805 19.8803 20.3143 19.767 20.7204C19.5897 21.3627 19.1552 22.546 18.6763 22.7411C17.7411 23.1221 15.7124 23.5834 14.136 23.9887C14.136 23.9887 14.0116 22.452 13.2799 22.1092C12.7375 21.8524 11.773 21.2955 11.2109 21.0175L9.64784 20.0061Z%22 fill%3D%22white%22%2F%3E%0A%3C%2Fg%3E%0A%3Cpath fill-rule%3D%22evenodd%22 clip-rule%3D%22evenodd%22 d%3D%22M9.64784 20.0061C9.09698 19.5962 8.31215 18.6667 7.07662 17.6141C6.37674 17.019 4.75792 15.979 4.19843 15.3804C3.70995 14.8498 3.67057 14.5637 3.61031 14.0317C3.5027 13.0853 4.24594 12.1268 5.26695 11.9557C6.03795 11.8252 6.80862 12.1513 7.50817 12.467C7.93016 12.6568 8.50327 13.0918 8.8428 13.3331C9.15506 13.5538 9.24447 13.6556 9.58664 13.9242C10.0391 14.2797 10.2024 14.472 9.94368 14.0165C9.64825 13.3254 9.15135 12.1432 8.61715 11.1232C8.21118 10.3499 8.13171 10.233 7.78568 9.64867C7.41863 9.02647 7.19683 8.5812 6.83051 7.91532C6.5737 7.44372 6.07889 6.47218 5.86419 5.90854C5.56924 5.13813 5.17948 3.85737 5.52886 3.12706C5.80268 2.5552 6.67928 2.16969 7.32266 2.30477C8.16504 2.48126 8.87551 3.44626 9.18352 3.82494C9.73712 4.50586 10.1911 5.34237 10.6925 6.46589C11.3303 7.89602 12.3235 9.85214 12.4548 10.2844C12.3463 9.74041 11.9114 8.65034 11.8667 8.11259C11.8261 7.62498 12.0725 6.97972 12.523 6.70216C12.9044 6.46797 13.3777 6.293 13.8288 6.26686C14.3072 6.23807 14.8723 6.43451 15.1324 6.69247C15.8991 7.45604 16.4043 9.30065 16.3996 9.1963C16.3782 8.61813 16.0253 7.38806 16.1961 6.79101C16.3081 6.39762 16.7435 5.9533 17.0056 5.83028C17.4114 5.6408 17.9282 5.47746 18.3992 5.44443C18.779 5.41876 19.3822 5.7168 19.5692 5.88721C20.0186 6.301 20.576 7.66262 20.762 8.14233C20.8384 8.3408 20.717 7.54564 20.9008 6.9622C21.2409 5.87874 23.2748 5.14119 23.8988 7.15118C24.1889 8.08905 24.1701 8.04752 24.3409 8.68503C24.5416 9.43411 24.6449 9.88937 24.7496 10.4421C24.8599 11.0337 25.0863 12.3769 25.0752 13.06C25.0675 13.5295 24.9174 14.6211 24.6679 15.3184C24.6679 15.3184 23.597 17.5465 23.6461 18.4076C23.6933 19.2677 23.7514 19.2584 23.873 19.8454C23.9941 20.431 24.4062 21.1343 24.4062 21.1343C24.4062 21.1343 23.2846 21.5964 22.6319 21.6641C22.0409 21.7246 21.0376 20.7853 20.7641 20.489C20.3875 20.0805 19.8803 20.3143 19.767 20.7204C19.5897 21.3627 19.1552 22.546 18.6763 22.7411C17.7411 23.1221 15.7123 23.5834 14.136 23.9887C14.136 23.9887 14.0116 22.4521 13.2799 22.1092C12.7375 21.8524 11.773 21.2955 11.2109 21.0175L9.64784 20.0061Z%22 stroke%3D%22black%22 stroke-width%3D%221.125%22 stroke-linecap%3D%22round%22 stroke-linejoin%3D%22round%22%2F%3E%0A%3Cpath d%3D%22M21.7169 17.3227L20.374 12.311%22 stroke%3D%22black%22 stroke-width%3D%221.125%22 stroke-linecap%3D%22round%22%2F%3E%0A%3Cpath d%3D%22M18.8011 18.1222L17.4296 13.0964%22 stroke%3D%22black%22 stroke-width%3D%221.125%22 stroke-linecap%3D%22round%22%2F%3E%0A%3Cpath d%3D%22M14.5729 13.9109L15.9334 18.8666%22 stroke%3D%22black%22 stroke-width%3D%221.125%22 stroke-linecap%3D%22round%22%2F%3E%0A%3Cdefs%3E%0A%3Cfilter id%3D%22filter0_d_9286_12946%22 x%3D%22-2.43187e-05%22 y%3D%220.677588%22 width%3D%2228.6757%22 height%3D%2228.9112%22 filterUnits%3D%22userSpaceOnUse%22 color-interpolation-filters%3D%22sRGB%22%3E%0A%3CfeFlood flood-opacity%3D%220%22 result%3D%22BackgroundImageFix%22%2F%3E%0A%3CfeColorMatrix in%3D%22SourceAlpha%22 type%3D%22matrix%22 values%3D%220 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0%22 result%3D%22hardAlpha%22%2F%3E%0A%3CfeOffset dy%3D%222%22%2F%3E%0A%3CfeGaussianBlur stdDeviation%3D%221.8%22%2F%3E%0A%3CfeComposite in2%3D%22hardAlpha%22 operator%3D%22out%22%2F%3E%0A%3CfeColorMatrix type%3D%22matrix%22 values%3D%220 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.65 0%22%2F%3E%0A%3CfeBlend mode%3D%22normal%22 in2%3D%22BackgroundImageFix%22 result%3D%22effect1_dropShadow_9286_12946%22%2F%3E%0A%3CfeBlend mode%3D%22normal%22 in%3D%22SourceGraphic%22 in2%3D%22effect1_dropShadow_9286_12946%22 result%3D%22shape%22%2F%3E%0A%3C%2Ffilter%3E%0A%3C%2Fdefs%3E%0A%3C%2Fsvg%3E") 6 2, pointer;
+      opacity: 0;
+      overflow: hidden;
+      transform: translateY(3px);
+      transition:
+        width 180ms cubic-bezier(0.22, 1, 0.36, 1),
+        margin-left 180ms cubic-bezier(0.22, 1, 0.36, 1),
+        opacity 180ms cubic-bezier(0.22, 1, 0.36, 1),
+        transform 320ms cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    .conversation-card-reply[hidden] { display: none !important; }
+    .conversation-card-stop {
+      all: unset;
+      display: none;
+      flex: none;
+      /* 与 reply 同款:hover 才展开占位 */
+      width: 0;
+      height: 30px;
+      margin-left: 0;
+      place-items: center;
+      border: 0;
+      border-radius: 50%;
+      padding: 0;
+      background: var(--pet-bubble-icon-action-bg);
+      color: var(--pet-bubble-icon-action);
+      cursor: url("data:image/svg+xml,%3Csvg width%3D%2229%22 height%3D%2230%22 viewBox%3D%220 0 29 30%22 fill%3D%22none%22 xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%3E%0A%3Cg filter%3D%22url(%23filter0_d_9286_12946)%22%3E%0A%3Cpath fill-rule%3D%22evenodd%22 clip-rule%3D%22evenodd%22 d%3D%22M9.64784 20.0061C9.09698 19.5962 8.31215 18.6667 7.07662 17.6141C6.37674 17.019 4.75792 15.979 4.19843 15.3804C3.70995 14.8498 3.67057 14.5637 3.61031 14.0317C3.5027 13.0853 4.24594 12.1268 5.26695 11.9557C6.03795 11.8252 6.80862 12.1513 7.50817 12.467C7.93016 12.6568 8.50327 13.0918 8.8428 13.3331C9.15506 13.5538 9.24447 13.6556 9.58664 13.9242C10.0391 14.2797 10.2024 14.472 9.94368 14.0165C9.64825 13.3254 9.15135 12.1432 8.61715 11.1232C8.21118 10.3499 8.13171 10.233 7.78568 9.64867C7.41863 9.02646 7.19683 8.5812 6.83051 7.91532C6.5737 7.44372 6.07889 6.47218 5.86419 5.90854C5.56924 5.13813 5.17948 3.85737 5.52886 3.12706C5.80268 2.5552 6.67928 2.16969 7.32266 2.30477C8.16504 2.48126 8.87551 3.44626 9.18352 3.82494C9.73712 4.50586 10.1911 5.34237 10.6925 6.46589C11.3303 7.89602 12.3235 9.85214 12.4548 10.2844C12.3463 9.74041 11.9114 8.65034 11.8667 8.11259C11.8261 7.62498 12.0725 6.97972 12.523 6.70216C12.9044 6.46797 13.3777 6.293 13.8288 6.26686C14.3072 6.23807 14.8723 6.43451 15.1324 6.69247C15.8991 7.45604 16.4043 9.30065 16.3996 9.1963C16.3782 8.61813 16.0253 7.38806 16.1961 6.79101C16.3081 6.39762 16.7435 5.9533 17.0056 5.83028C17.4114 5.6408 17.9282 5.47746 18.3992 5.44443C18.779 5.41876 19.3822 5.7168 19.5692 5.88721C20.0186 6.301 20.576 7.66262 20.762 8.14233C20.8384 8.3408 20.717 7.54564 20.9008 6.9622C21.2409 5.87874 23.2748 5.14119 23.8988 7.15118C24.1889 8.08905 24.1701 8.04752 24.3409 8.68503C24.5416 9.43411 24.6449 9.88937 24.7496 10.4421C24.8599 11.0337 25.0863 12.3769 25.0752 13.06C25.0675 13.5295 24.9174 14.6211 24.6679 15.3184C24.6679 15.3184 23.597 17.5465 23.6461 18.4076C23.6933 19.2677 23.7514 19.2584 23.873 19.8454C23.9941 20.431 24.4062 21.1343 24.4062 21.1343C24.4062 21.1343 23.2846 21.5964 22.6319 21.6641C22.0409 21.7246 21.0376 20.7853 20.7641 20.489C20.3875 20.0805 19.8803 20.3143 19.767 20.7204C19.5897 21.3627 19.1552 22.546 18.6763 22.7411C17.7411 23.1221 15.7124 23.5834 14.136 23.9887C14.136 23.9887 14.0116 22.452 13.2799 22.1092C12.7375 21.8524 11.773 21.2955 11.2109 21.0175L9.64784 20.0061Z%22 fill%3D%22white%22%2F%3E%0A%3C%2Fg%3E%0A%3Cpath fill-rule%3D%22evenodd%22 clip-rule%3D%22evenodd%22 d%3D%22M9.64784 20.0061C9.09698 19.5962 8.31215 18.6667 7.07662 17.6141C6.37674 17.019 4.75792 15.979 4.19843 15.3804C3.70995 14.8498 3.67057 14.5637 3.61031 14.0317C3.5027 13.0853 4.24594 12.1268 5.26695 11.9557C6.03795 11.8252 6.80862 12.1513 7.50817 12.467C7.93016 12.6568 8.50327 13.0918 8.8428 13.3331C9.15506 13.5538 9.24447 13.6556 9.58664 13.9242C10.0391 14.2797 10.2024 14.472 9.94368 14.0165C9.64825 13.3254 9.15135 12.1432 8.61715 11.1232C8.21118 10.3499 8.13171 10.233 7.78568 9.64867C7.41863 9.02647 7.19683 8.5812 6.83051 7.91532C6.5737 7.44372 6.07889 6.47218 5.86419 5.90854C5.56924 5.13813 5.17948 3.85737 5.52886 3.12706C5.80268 2.5552 6.67928 2.16969 7.32266 2.30477C8.16504 2.48126 8.87551 3.44626 9.18352 3.82494C9.73712 4.50586 10.1911 5.34237 10.6925 6.46589C11.3303 7.89602 12.3235 9.85214 12.4548 10.2844C12.3463 9.74041 11.9114 8.65034 11.8667 8.11259C11.8261 7.62498 12.0725 6.97972 12.523 6.70216C12.9044 6.46797 13.3777 6.293 13.8288 6.26686C14.3072 6.23807 14.8723 6.43451 15.1324 6.69247C15.8991 7.45604 16.4043 9.30065 16.3996 9.1963C16.3782 8.61813 16.0253 7.38806 16.1961 6.79101C16.3081 6.39762 16.7435 5.9533 17.0056 5.83028C17.4114 5.6408 17.9282 5.47746 18.3992 5.44443C18.779 5.41876 19.3822 5.7168 19.5692 5.88721C20.0186 6.301 20.576 7.66262 20.762 8.14233C20.8384 8.3408 20.717 7.54564 20.9008 6.9622C21.2409 5.87874 23.2748 5.14119 23.8988 7.15118C24.1889 8.08905 24.1701 8.04752 24.3409 8.68503C24.5416 9.43411 24.6449 9.88937 24.7496 10.4421C24.8599 11.0337 25.0863 12.3769 25.0752 13.06C25.0675 13.5295 24.9174 14.6211 24.6679 15.3184C24.6679 15.3184 23.597 17.5465 23.6461 18.4076C23.6933 19.2677 23.7514 19.2584 23.873 19.8454C23.9941 20.431 24.4062 21.1343 24.4062 21.1343C24.4062 21.1343 23.2846 21.5964 22.6319 21.6641C22.0409 21.7246 21.0376 20.7853 20.7641 20.489C20.3875 20.0805 19.8803 20.3143 19.767 20.7204C19.5897 21.3627 19.1552 22.546 18.6763 22.7411C17.7411 23.1221 15.7123 23.5834 14.136 23.9887C14.136 23.9887 14.0116 22.4521 13.2799 22.1092C12.7375 21.8524 11.773 21.2955 11.2109 21.0175L9.64784 20.0061Z%22 stroke%3D%22black%22 stroke-width%3D%221.125%22 stroke-linecap%3D%22round%22 stroke-linejoin%3D%22round%22%2F%3E%0A%3Cpath d%3D%22M21.7169 17.3227L20.374 12.311%22 stroke%3D%22black%22 stroke-width%3D%221.125%22 stroke-linecap%3D%22round%22%2F%3E%0A%3Cpath d%3D%22M18.8011 18.1222L17.4296 13.0964%22 stroke%3D%22black%22 stroke-width%3D%221.125%22 stroke-linecap%3D%22round%22%2F%3E%0A%3Cpath d%3D%22M14.5729 13.9109L15.9334 18.8666%22 stroke%3D%22black%22 stroke-width%3D%221.125%22 stroke-linecap%3D%22round%22%2F%3E%0A%3Cdefs%3E%0A%3Cfilter id%3D%22filter0_d_9286_12946%22 x%3D%22-2.43187e-05%22 y%3D%220.677588%22 width%3D%2228.6757%22 height%3D%2228.9112%22 filterUnits%3D%22userSpaceOnUse%22 color-interpolation-filters%3D%22sRGB%22%3E%0A%3CfeFlood flood-opacity%3D%220%22 result%3D%22BackgroundImageFix%22%2F%3E%0A%3CfeColorMatrix in%3D%22SourceAlpha%22 type%3D%22matrix%22 values%3D%220 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0%22 result%3D%22hardAlpha%22%2F%3E%0A%3CfeOffset dy%3D%222%22%2F%3E%0A%3CfeGaussianBlur stdDeviation%3D%221.8%22%2F%3E%0A%3CfeComposite in2%3D%22hardAlpha%22 operator%3D%22out%22%2F%3E%0A%3CfeColorMatrix type%3D%22matrix%22 values%3D%220 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.65 0%22%2F%3E%0A%3CfeBlend mode%3D%22normal%22 in2%3D%22BackgroundImageFix%22 result%3D%22effect1_dropShadow_9286_12946%22%2F%3E%0A%3CfeBlend mode%3D%22normal%22 in%3D%22SourceGraphic%22 in2%3D%22effect1_dropShadow_9286_12946%22 result%3D%22shape%22%2F%3E%0A%3C%2Ffilter%3E%0A%3C%2Fdefs%3E%0A%3C%2Fsvg%3E") 6 2, pointer;
+      opacity: 0;
+      overflow: hidden;
+      transform: translateY(3px);
+      transition:
+        width 180ms cubic-bezier(0.22, 1, 0.36, 1),
+        margin-left 180ms cubic-bezier(0.22, 1, 0.36, 1),
+        opacity 180ms cubic-bezier(0.22, 1, 0.36, 1),
+        transform 320ms cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    .conversation-card-stop[hidden] { display: none !important; }
+    .conversation-card-stop:disabled {
+      cursor: default;
+      opacity: 0.45;
+    }
+    .conversation-card.is-running .conversation-card-stop {
+      display: grid;
+    }
+    .conversation-card-reply svg {
+      display: block;
+      width: 17px;
+      height: 17px;
+    }
+    .conversation-card-stop svg {
+      display: block;
+      width: 16px;
+      height: 16px;
+    }
+    .conversation-card:hover .conversation-card-reply,
+    .conversation-card:focus-within .conversation-card-reply,
+    .conversation-card:hover .conversation-card-stop,
+    .conversation-card:focus-within .conversation-card-stop {
+      width: 30px;
+      margin-left: 4px;
+      opacity: 1;
+      transform: translateY(0);
+    }
+    .keyboard-navigation .conversation-card-reply:focus-visible {
+      width: 30px;
+      margin-left: 4px;
+      outline: 2px solid color-mix(in srgb, var(--pet-bubble-text) 56%, transparent);
+      outline-offset: 1px;
+      opacity: 1;
+    }
+    /* Keep the quick reply field inside its own rounded surface. */
+    .conversation-card-reply-section {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin: 8px 0 0;
+      border: 0;
+      border-radius: 10px;
+      padding: 6px 8px;
+      background: var(--pet-bubble-icon-action-bg);
+    }
+    .conversation-card-reply-section[hidden] { display: none !important; }
+    /* Override the host input border; the enclosing form owns the surface. */
+    #conversation-list .conversation-card-reply-input {
+      flex: 1 1 auto;
+      min-width: 0;
+      min-block-size: 0;
+      border: 0;
+      border-radius: 0;
+      outline: none;
+      padding: 0;
+      background: transparent;
+      color: var(--pet-bubble-card-text);
+      font: 12px/1.4 system-ui, sans-serif;
+    }
+    .conversation-card-reply-input::placeholder {
+      color: var(--pet-bubble-subtext);
+    }
+    .conversation-card-reply-input:disabled {
+      opacity: 0.6;
+    }
+    .conversation-card-reply-send {
+      all: unset;
+      display: grid;
+      box-sizing: border-box;
+      width: 24px;
+      height: 24px;
+      /* 兜底 widget 基础样式 button{min-block-size:32px} 会把 24x24 撑成竖椭圆 */
+      min-height: 0;
+      place-items: center;
+      border: 0.5px solid var(--pet-bubble-card-border);
+      border-radius: 50%;
+      padding: 0;
+      background: var(--pet-bubble-send-background);
+      color: var(--pet-bubble-send-foreground);
+      cursor: url("data:image/svg+xml,%3Csvg width%3D%2229%22 height%3D%2230%22 viewBox%3D%220 0 29 30%22 fill%3D%22none%22 xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%3E%0A%3Cg filter%3D%22url(%23filter0_d_9286_12946)%22%3E%0A%3Cpath fill-rule%3D%22evenodd%22 clip-rule%3D%22evenodd%22 d%3D%22M9.64784 20.0061C9.09698 19.5962 8.31215 18.6667 7.07662 17.6141C6.37674 17.019 4.75792 15.979 4.19843 15.3804C3.70995 14.8498 3.67057 14.5637 3.61031 14.0317C3.5027 13.0853 4.24594 12.1268 5.26695 11.9557C6.03795 11.8252 6.80862 12.1513 7.50817 12.467C7.93016 12.6568 8.50327 13.0918 8.8428 13.3331C9.15506 13.5538 9.24447 13.6556 9.58664 13.9242C10.0391 14.2797 10.2024 14.472 9.94368 14.0165C9.64825 13.3254 9.15135 12.1432 8.61715 11.1232C8.21118 10.3499 8.13171 10.233 7.78568 9.64867C7.41863 9.02646 7.19683 8.5812 6.83051 7.91532C6.5737 7.44372 6.07889 6.47218 5.86419 5.90854C5.56924 5.13813 5.17948 3.85737 5.52886 3.12706C5.80268 2.5552 6.67928 2.16969 7.32266 2.30477C8.16504 2.48126 8.87551 3.44626 9.18352 3.82494C9.73712 4.50586 10.1911 5.34237 10.6925 6.46589C11.3303 7.89602 12.3235 9.85214 12.4548 10.2844C12.3463 9.74041 11.9114 8.65034 11.8667 8.11259C11.8261 7.62498 12.0725 6.97972 12.523 6.70216C12.9044 6.46797 13.3777 6.293 13.8288 6.26686C14.3072 6.23807 14.8723 6.43451 15.1324 6.69247C15.8991 7.45604 16.4043 9.30065 16.3996 9.1963C16.3782 8.61813 16.0253 7.38806 16.1961 6.79101C16.3081 6.39762 16.7435 5.9533 17.0056 5.83028C17.4114 5.6408 17.9282 5.47746 18.3992 5.44443C18.779 5.41876 19.3822 5.7168 19.5692 5.88721C20.0186 6.301 20.576 7.66262 20.762 8.14233C20.8384 8.3408 20.717 7.54564 20.9008 6.9622C21.2409 5.87874 23.2748 5.14119 23.8988 7.15118C24.1889 8.08905 24.1701 8.04752 24.3409 8.68503C24.5416 9.43411 24.6449 9.88937 24.7496 10.4421C24.8599 11.0337 25.0863 12.3769 25.0752 13.06C25.0675 13.5295 24.9174 14.6211 24.6679 15.3184C24.6679 15.3184 23.597 17.5465 23.6461 18.4076C23.6933 19.2677 23.7514 19.2584 23.873 19.8454C23.9941 20.431 24.4062 21.1343 24.4062 21.1343C24.4062 21.1343 23.2846 21.5964 22.6319 21.6641C22.0409 21.7246 21.0376 20.7853 20.7641 20.489C20.3875 20.0805 19.8803 20.3143 19.767 20.7204C19.5897 21.3627 19.1552 22.546 18.6763 22.7411C17.7411 23.1221 15.7124 23.5834 14.136 23.9887C14.136 23.9887 14.0116 22.452 13.2799 22.1092C12.7375 21.8524 11.773 21.2955 11.2109 21.0175L9.64784 20.0061Z%22 fill%3D%22white%22%2F%3E%0A%3C%2Fg%3E%0A%3Cpath fill-rule%3D%22evenodd%22 clip-rule%3D%22evenodd%22 d%3D%22M9.64784 20.0061C9.09698 19.5962 8.31215 18.6667 7.07662 17.6141C6.37674 17.019 4.75792 15.979 4.19843 15.3804C3.70995 14.8498 3.67057 14.5637 3.61031 14.0317C3.5027 13.0853 4.24594 12.1268 5.26695 11.9557C6.03795 11.8252 6.80862 12.1513 7.50817 12.467C7.93016 12.6568 8.50327 13.0918 8.8428 13.3331C9.15506 13.5538 9.24447 13.6556 9.58664 13.9242C10.0391 14.2797 10.2024 14.472 9.94368 14.0165C9.64825 13.3254 9.15135 12.1432 8.61715 11.1232C8.21118 10.3499 8.13171 10.233 7.78568 9.64867C7.41863 9.02647 7.19683 8.5812 6.83051 7.91532C6.5737 7.44372 6.07889 6.47218 5.86419 5.90854C5.56924 5.13813 5.17948 3.85737 5.52886 3.12706C5.80268 2.5552 6.67928 2.16969 7.32266 2.30477C8.16504 2.48126 8.87551 3.44626 9.18352 3.82494C9.73712 4.50586 10.1911 5.34237 10.6925 6.46589C11.3303 7.89602 12.3235 9.85214 12.4548 10.2844C12.3463 9.74041 11.9114 8.65034 11.8667 8.11259C11.8261 7.62498 12.0725 6.97972 12.523 6.70216C12.9044 6.46797 13.3777 6.293 13.8288 6.26686C14.3072 6.23807 14.8723 6.43451 15.1324 6.69247C15.8991 7.45604 16.4043 9.30065 16.3996 9.1963C16.3782 8.61813 16.0253 7.38806 16.1961 6.79101C16.3081 6.39762 16.7435 5.9533 17.0056 5.83028C17.4114 5.6408 17.9282 5.47746 18.3992 5.44443C18.779 5.41876 19.3822 5.7168 19.5692 5.88721C20.0186 6.301 20.576 7.66262 20.762 8.14233C20.8384 8.3408 20.717 7.54564 20.9008 6.9622C21.2409 5.87874 23.2748 5.14119 23.8988 7.15118C24.1889 8.08905 24.1701 8.04752 24.3409 8.68503C24.5416 9.43411 24.6449 9.88937 24.7496 10.4421C24.8599 11.0337 25.0863 12.3769 25.0752 13.06C25.0675 13.5295 24.9174 14.6211 24.6679 15.3184C24.6679 15.3184 23.597 17.5465 23.6461 18.4076C23.6933 19.2677 23.7514 19.2584 23.873 19.8454C23.9941 20.431 24.4062 21.1343 24.4062 21.1343C24.4062 21.1343 23.2846 21.5964 22.6319 21.6641C22.0409 21.7246 21.0376 20.7853 20.7641 20.489C20.3875 20.0805 19.8803 20.3143 19.767 20.7204C19.5897 21.3627 19.1552 22.546 18.6763 22.7411C17.7411 23.1221 15.7123 23.5834 14.136 23.9887C14.136 23.9887 14.0116 22.4521 13.2799 22.1092C12.7375 21.8524 11.773 21.2955 11.2109 21.0175L9.64784 20.0061Z%22 stroke%3D%22black%22 stroke-width%3D%221.125%22 stroke-linecap%3D%22round%22 stroke-linejoin%3D%22round%22%2F%3E%0A%3Cpath d%3D%22M21.7169 17.3227L20.374 12.311%22 stroke%3D%22black%22 stroke-width%3D%221.125%22 stroke-linecap%3D%22round%22%2F%3E%0A%3Cpath d%3D%22M18.8011 18.1222L17.4296 13.0964%22 stroke%3D%22black%22 stroke-width%3D%221.125%22 stroke-linecap%3D%22round%22%2F%3E%0A%3Cpath d%3D%22M14.5729 13.9109L15.9334 18.8666%22 stroke%3D%22black%22 stroke-width%3D%221.125%22 stroke-linecap%3D%22round%22%2F%3E%0A%3Cdefs%3E%0A%3Cfilter id%3D%22filter0_d_9286_12946%22 x%3D%22-2.43187e-05%22 y%3D%220.677588%22 width%3D%2228.6757%22 height%3D%2228.9112%22 filterUnits%3D%22userSpaceOnUse%22 color-interpolation-filters%3D%22sRGB%22%3E%0A%3CfeFlood flood-opacity%3D%220%22 result%3D%22BackgroundImageFix%22%2F%3E%0A%3CfeColorMatrix in%3D%22SourceAlpha%22 type%3D%22matrix%22 values%3D%220 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0%22 result%3D%22hardAlpha%22%2F%3E%0A%3CfeOffset dy%3D%222%22%2F%3E%0A%3CfeGaussianBlur stdDeviation%3D%221.8%22%2F%3E%0A%3CfeComposite in2%3D%22hardAlpha%22 operator%3D%22out%22%2F%3E%0A%3CfeColorMatrix type%3D%22matrix%22 values%3D%220 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.65 0%22%2F%3E%0A%3CfeBlend mode%3D%22normal%22 in2%3D%22BackgroundImageFix%22 result%3D%22effect1_dropShadow_9286_12946%22%2F%3E%0A%3CfeBlend mode%3D%22normal%22 in%3D%22SourceGraphic%22 in2%3D%22effect1_dropShadow_9286_12946%22 result%3D%22shape%22%2F%3E%0A%3C%2Ffilter%3E%0A%3C%2Fdefs%3E%0A%3C%2Fsvg%3E") 6 2, pointer;
+    }
+    .conversation-card-reply-send svg {
+      display: block;
+      width: 12px;
+      height: 12px;
+    }
+    .conversation-card-reply-send:disabled {
+      cursor: default;
+      opacity: 0.45;
+    }
+    #stage.bubble-visible #conversation-bubble {
+      pointer-events: auto;
+      opacity: 1;
+      transform: translate(-50%, 0) scale(1);
+      visibility: visible;
+    }
+    #conversation-bubble-toggle {
+      all: unset;
+      position: absolute;
+      z-index: 3;
+      display: none;
+      box-sizing: border-box;
+      width: var(--pet-bubble-toggle-size, 30px) !important;
+      min-width: var(--pet-bubble-toggle-size, 30px) !important;
+      max-width: var(--pet-bubble-toggle-size, 30px) !important;
+      height: var(--pet-bubble-toggle-size, 30px) !important;
+      min-height: var(--pet-bubble-toggle-size, 30px) !important;
+      max-height: var(--pet-bubble-toggle-size, 30px) !important;
+      inline-size: var(--pet-bubble-toggle-size, 30px) !important;
+      min-inline-size: var(--pet-bubble-toggle-size, 30px) !important;
+      max-inline-size: var(--pet-bubble-toggle-size, 30px) !important;
+      block-size: var(--pet-bubble-toggle-size, 30px) !important;
+      min-block-size: var(--pet-bubble-toggle-size, 30px) !important;
+      max-block-size: var(--pet-bubble-toggle-size, 30px) !important;
+      aspect-ratio: 1;
+      place-items: center;
+      border: 0.5px solid var(--pet-bubble-card-border);
+      border-radius: 50%;
+      padding: 0;
+      background: var(--pet-bubble-close-background);
+      box-shadow: var(--pet-bubble-close-shadow);
+      color: var(--pet-bubble-toggle-foreground);
+      font: 600 11px/1 system-ui, sans-serif;
+      cursor: url("data:image/svg+xml,%3Csvg width%3D%2229%22 height%3D%2230%22 viewBox%3D%220 0 29 30%22 fill%3D%22none%22 xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%3E%0A%3Cg filter%3D%22url(%23filter0_d_9286_12946)%22%3E%0A%3Cpath fill-rule%3D%22evenodd%22 clip-rule%3D%22evenodd%22 d%3D%22M9.64784 20.0061C9.09698 19.5962 8.31215 18.6667 7.07662 17.6141C6.37674 17.019 4.75792 15.979 4.19843 15.3804C3.70995 14.8498 3.67057 14.5637 3.61031 14.0317C3.5027 13.0853 4.24594 12.1268 5.26695 11.9557C6.03795 11.8252 6.80862 12.1513 7.50817 12.467C7.93016 12.6568 8.50327 13.0918 8.8428 13.3331C9.15506 13.5538 9.24447 13.6556 9.58664 13.9242C10.0391 14.2797 10.2024 14.472 9.94368 14.0165C9.64825 13.3254 9.15135 12.1432 8.61715 11.1232C8.21118 10.3499 8.13171 10.233 7.78568 9.64867C7.41863 9.02646 7.19683 8.5812 6.83051 7.91532C6.5737 7.44372 6.07889 6.47218 5.86419 5.90854C5.56924 5.13813 5.17948 3.85737 5.52886 3.12706C5.80268 2.5552 6.67928 2.16969 7.32266 2.30477C8.16504 2.48126 8.87551 3.44626 9.18352 3.82494C9.73712 4.50586 10.1911 5.34237 10.6925 6.46589C11.3303 7.89602 12.3235 9.85214 12.4548 10.2844C12.3463 9.74041 11.9114 8.65034 11.8667 8.11259C11.8261 7.62498 12.0725 6.97972 12.523 6.70216C12.9044 6.46797 13.3777 6.293 13.8288 6.26686C14.3072 6.23807 14.8723 6.43451 15.1324 6.69247C15.8991 7.45604 16.4043 9.30065 16.3996 9.1963C16.3782 8.61813 16.0253 7.38806 16.1961 6.79101C16.3081 6.39762 16.7435 5.9533 17.0056 5.83028C17.4114 5.6408 17.9282 5.47746 18.3992 5.44443C18.779 5.41876 19.3822 5.7168 19.5692 5.88721C20.0186 6.301 20.576 7.66262 20.762 8.14233C20.8384 8.3408 20.717 7.54564 20.9008 6.9622C21.2409 5.87874 23.2748 5.14119 23.8988 7.15118C24.1889 8.08905 24.1701 8.04752 24.3409 8.68503C24.5416 9.43411 24.6449 9.88937 24.7496 10.4421C24.8599 11.0337 25.0863 12.3769 25.0752 13.06C25.0675 13.5295 24.9174 14.6211 24.6679 15.3184C24.6679 15.3184 23.597 17.5465 23.6461 18.4076C23.6933 19.2677 23.7514 19.2584 23.873 19.8454C23.9941 20.431 24.4062 21.1343 24.4062 21.1343C24.4062 21.1343 23.2846 21.5964 22.6319 21.6641C22.0409 21.7246 21.0376 20.7853 20.7641 20.489C20.3875 20.0805 19.8803 20.3143 19.767 20.7204C19.5897 21.3627 19.1552 22.546 18.6763 22.7411C17.7411 23.1221 15.7124 23.5834 14.136 23.9887C14.136 23.9887 14.0116 22.452 13.2799 22.1092C12.7375 21.8524 11.773 21.2955 11.2109 21.0175L9.64784 20.0061Z%22 fill%3D%22white%22%2F%3E%0A%3C%2Fg%3E%0A%3Cpath fill-rule%3D%22evenodd%22 clip-rule%3D%22evenodd%22 d%3D%22M9.64784 20.0061C9.09698 19.5962 8.31215 18.6667 7.07662 17.6141C6.37674 17.019 4.75792 15.979 4.19843 15.3804C3.70995 14.8498 3.67057 14.5637 3.61031 14.0317C3.5027 13.0853 4.24594 12.1268 5.26695 11.9557C6.03795 11.8252 6.80862 12.1513 7.50817 12.467C7.93016 12.6568 8.50327 13.0918 8.8428 13.3331C9.15506 13.5538 9.24447 13.6556 9.58664 13.9242C10.0391 14.2797 10.2024 14.472 9.94368 14.0165C9.64825 13.3254 9.15135 12.1432 8.61715 11.1232C8.21118 10.3499 8.13171 10.233 7.78568 9.64867C7.41863 9.02647 7.19683 8.5812 6.83051 7.91532C6.5737 7.44372 6.07889 6.47218 5.86419 5.90854C5.56924 5.13813 5.17948 3.85737 5.52886 3.12706C5.80268 2.5552 6.67928 2.16969 7.32266 2.30477C8.16504 2.48126 8.87551 3.44626 9.18352 3.82494C9.73712 4.50586 10.1911 5.34237 10.6925 6.46589C11.3303 7.89602 12.3235 9.85214 12.4548 10.2844C12.3463 9.74041 11.9114 8.65034 11.8667 8.11259C11.8261 7.62498 12.0725 6.97972 12.523 6.70216C12.9044 6.46797 13.3777 6.293 13.8288 6.26686C14.3072 6.23807 14.8723 6.43451 15.1324 6.69247C15.8991 7.45604 16.4043 9.30065 16.3996 9.1963C16.3782 8.61813 16.0253 7.38806 16.1961 6.79101C16.3081 6.39762 16.7435 5.9533 17.0056 5.83028C17.4114 5.6408 17.9282 5.47746 18.3992 5.44443C18.779 5.41876 19.3822 5.7168 19.5692 5.88721C20.0186 6.301 20.576 7.66262 20.762 8.14233C20.8384 8.3408 20.717 7.54564 20.9008 6.9622C21.2409 5.87874 23.2748 5.14119 23.8988 7.15118C24.1889 8.08905 24.1701 8.04752 24.3409 8.68503C24.5416 9.43411 24.6449 9.88937 24.7496 10.4421C24.8599 11.0337 25.0863 12.3769 25.0752 13.06C25.0675 13.5295 24.9174 14.6211 24.6679 15.3184C24.6679 15.3184 23.597 17.5465 23.6461 18.4076C23.6933 19.2677 23.7514 19.2584 23.873 19.8454C23.9941 20.431 24.4062 21.1343 24.4062 21.1343C24.4062 21.1343 23.2846 21.5964 22.6319 21.6641C22.0409 21.7246 21.0376 20.7853 20.7641 20.489C20.3875 20.0805 19.8803 20.3143 19.767 20.7204C19.5897 21.3627 19.1552 22.546 18.6763 22.7411C17.7411 23.1221 15.7123 23.5834 14.136 23.9887C14.136 23.9887 14.0116 22.4521 13.2799 22.1092C12.7375 21.8524 11.773 21.2955 11.2109 21.0175L9.64784 20.0061Z%22 stroke%3D%22black%22 stroke-width%3D%221.125%22 stroke-linecap%3D%22round%22 stroke-linejoin%3D%22round%22%2F%3E%0A%3Cpath d%3D%22M21.7169 17.3227L20.374 12.311%22 stroke%3D%22black%22 stroke-width%3D%221.125%22 stroke-linecap%3D%22round%22%2F%3E%0A%3Cpath d%3D%22M18.8011 18.1222L17.4296 13.0964%22 stroke%3D%22black%22 stroke-width%3D%221.125%22 stroke-linecap%3D%22round%22%2F%3E%0A%3Cpath d%3D%22M14.5729 13.9109L15.9334 18.8666%22 stroke%3D%22black%22 stroke-width%3D%221.125%22 stroke-linecap%3D%22round%22%2F%3E%0A%3Cdefs%3E%0A%3Cfilter id%3D%22filter0_d_9286_12946%22 x%3D%22-2.43187e-05%22 y%3D%220.677588%22 width%3D%2228.6757%22 height%3D%2228.9112%22 filterUnits%3D%22userSpaceOnUse%22 color-interpolation-filters%3D%22sRGB%22%3E%0A%3CfeFlood flood-opacity%3D%220%22 result%3D%22BackgroundImageFix%22%2F%3E%0A%3CfeColorMatrix in%3D%22SourceAlpha%22 type%3D%22matrix%22 values%3D%220 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0%22 result%3D%22hardAlpha%22%2F%3E%0A%3CfeOffset dy%3D%222%22%2F%3E%0A%3CfeGaussianBlur stdDeviation%3D%221.8%22%2F%3E%0A%3CfeComposite in2%3D%22hardAlpha%22 operator%3D%22out%22%2F%3E%0A%3CfeColorMatrix type%3D%22matrix%22 values%3D%220 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.65 0%22%2F%3E%0A%3CfeBlend mode%3D%22normal%22 in2%3D%22BackgroundImageFix%22 result%3D%22effect1_dropShadow_9286_12946%22%2F%3E%0A%3CfeBlend mode%3D%22normal%22 in%3D%22SourceGraphic%22 in2%3D%22effect1_dropShadow_9286_12946%22 result%3D%22shape%22%2F%3E%0A%3C%2Ffilter%3E%0A%3C%2Fdefs%3E%0A%3C%2Fsvg%3E") 6 2, pointer;
+    }
+    .keyboard-navigation #conversation-bubble-toggle:focus-visible {
+      outline: 2px solid color-mix(in srgb, var(--pet-bubble-text) 56%, transparent);
+      outline-offset: 2px;
+    }
+    #conversation-bubble-toggle-icon {
+      display: block;
+      width: 16px;
+      height: 16px;
+    }
+    #conversation-bubble-toggle-count {
+      display: none;
+      font: 600 13px/1 system-ui, sans-serif;
+    }
+    .conversation-card-progress {
+      /* Match upstream Native's original pet bubble, including the text-sized sweep. */
+      display: inline-block;
+      max-width: 100%;
+      vertical-align: bottom;
+      background-color: var(--pet-bubble-progress-base);
+      background-image: linear-gradient(90deg, transparent 35%, var(--pet-bubble-progress-text) 50%, transparent 65%);
+      background-size: 300% 100%;
+      background-repeat: no-repeat;
+      background-clip: text;
+      -webkit-background-clip: text;
+      color: transparent;
+      -webkit-text-fill-color: transparent;
+      animation: pet-progress-shimmer 2.2s linear infinite;
+    }
+    @keyframes pet-progress-shimmer {
+      from { background-position: 100% 0; }
+      to { background-position: 0 0; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .conversation-card-progress {
+        animation: none;
+        background: none;
+        -webkit-text-fill-color: currentcolor;
+        color: var(--pet-bubble-progress-base);
+      }
+      #conversation-bubble,
+      #conversation-bubble-toggle,
+      .conversation-card,
+      .conversation-card-reply,
+      .conversation-card-stop,
+      .conversation-bubble-close {
+        transition-duration: 1ms !important;
+      }
+    }
+
+    /* === Облако мыслей (кастом Боса) === */
+    /* Белые пышные карточки-«облака» вместо прямоугольных */
+    .conversation-card {
+      --pet-bubble-card-text: #2f2a26;
+      --pet-bubble-text: #2f2a26;
+      --pet-bubble-subtext: #8a857f;
+      --pet-bubble-card-background: #ffffff;
+      --pet-bubble-card-border: rgba(0, 0, 0, 0.06);
+      background: #ffffff;
+      border-radius: 26px;
+      box-shadow: 0 8px 22px rgba(31, 27, 24, 0.16), 0 1.5px 4px rgba(31, 27, 24, 0.08);
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
+    }
+    /* Пузырьки-«ниточка» от облачка к лисичке */
+    #stage.bubble-visible #conversation-bubble::after {
+      content: "";
+      position: absolute;
+      left: 50%;
+      bottom: -24px;
+      width: 13px;
+      height: 13px;
+      margin-left: -6px;
+      border-radius: 50%;
+      background: #ffffff;
+      box-shadow:
+        0 2px 6px rgba(31, 27, 24, 0.12),
+        -16px 16px 0 -4px #ffffff;
+    }
+    /* Облачко-мысль при клике на лисичку */
+    #thought-cloud {
+      position: absolute;
+      z-index: 3;
+      left: 50%;
+      bottom: 62%;
+      max-width: 190px;
+      padding: 10px 16px;
+      border: 0;
+      border-radius: 999px;
+      background: #ffffff;
+      color: #2f2a26;
+      font: 600 13px/1.35 system-ui, sans-serif;
+      text-align: center;
+      box-shadow: 0 8px 22px rgba(31, 27, 24, 0.18), 0 1.5px 4px rgba(31, 27, 24, 0.08);
+      transform: translate(-50%, 10px) scale(0.8);
+      opacity: 0;
+      visibility: hidden;
+      transition: opacity 220ms ease, transform 380ms cubic-bezier(0.34, 1.56, 0.64, 1), visibility 0s linear 400ms;
+      pointer-events: none;
+    }
+    #thought-cloud::before,
+    #thought-cloud::after {
+      content: "";
+      position: absolute;
+      border-radius: 50%;
+      background: #ffffff;
+      box-shadow: 0 2px 6px rgba(31, 27, 24, 0.10);
+    }
+    #thought-cloud::before { width: 12px; height: 12px; left: 32%; bottom: -13px; }
+    #thought-cloud::after { width: 7px; height: 7px; left: 26%; bottom: -25px; }
+    #thought-cloud.show {
+      opacity: 1;
+      visibility: visible;
+      transform: translate(-50%, 0) scale(1);
+      transition: opacity 200ms ease, transform 380ms cubic-bezier(0.34, 1.56, 0.64, 1);
+    }
+
+  </style>
+</head>
+<body>
+  <main id="stage" aria-label="桌宠">
+
+    <section id="conversation-bubble" aria-label="最近任务" aria-live="polite">
+      <header id="conversation-center-header" hidden>
+        <button id="conversation-center-clear-all" type="button">清除全部</button>
+      </header>
+      <div id="conversation-list"></div>
+      <div id="conversation-close-layer"></div>
+    </section>
+    <div id="conversation-stack-layers" aria-hidden="true"></div>
+    <button
+      id="conversation-bubble-toggle"
+      type="button"
+      aria-expanded="true"
+      aria-label="隐藏会话状态"
+    >
+      <svg
+        id="conversation-bubble-toggle-icon"
+        viewBox="0 0 20 20"
+        aria-hidden="true"
+      >
+        <path
+          d="M9.49262 13.9277C9.78582 14.2188 10.2592 14.218 10.5514 13.9258L16.3636 8.11357C16.6565 7.82068 16.6565 7.34581 16.3636 7.05291C16.0707 6.76002 15.5959 6.76002 15.303 7.05291L10.0191 12.3368L4.69504 7.051C4.40109 6.75917 3.92622 6.76088 3.63438 7.05483C3.34255 7.34878 3.34427 7.82365 3.63821 8.11549L9.49262 13.9277Z"
+          fill="currentColor"
+          fill-rule="evenodd"
+        ></path>
+      </svg>
+      <span id="conversation-bubble-toggle-count"></span>
+    </button>
+    <div id="pet" role="img"></div>
+    <div id="thought-cloud" aria-hidden="true"></div>
+    <canvas id="pet-three" role="img"></canvas>
+    <div id="error" role="status"></div>
+  </main>
+  <script>
+  (() => {
+    'use strict';
+    const RUNTIME_READY_MESSAGE_TYPE = "daimon-pet:runtime-ready";
+    const MESSAGE_TYPE = "daimon-pet:state";
+    const POINTER_PRESENCE_MESSAGE_TYPE = "daimon-pet:pointer-presence";
+    const DISPLAY_SCALE_MESSAGE_TYPE = "daimon-pet:display-scale";
+    const ANCHOR_MESSAGE_TYPE = "daimon-pet:anchor";
+    const CLICK_MESSAGE_TYPE = "daimon-pet:click";
+    const BOOT_MESSAGE_TYPE = "daimon-pet:boot";
+    const SHUTDOWN_MESSAGE_TYPE = "daimon-pet:shutdown";
+    const SHUTDOWN_DONE_MESSAGE_TYPE = "daimon-pet:shutdown-done";
+    const POINTER_IDLE_DELAY_MS = 1000;
+    const IDLE_FRAME_INTERVAL_MS = 160; // было 800 — лисичка «замерзала», когда курсор далеко
+    const IDLE_VARIANT_MIN_DELAY_MS = 120000;
+    const IDLE_VARIANT_MAX_DELAY_MS = 300000;
+    const BASE_DISPLAY_SIZE_PX = 256 * 0.95;
+    // Image Pets fill most of their frame; 100% now matches the former 60% size.
+    // Уменьшено на 30% по просьбе владельца: 0.6 → 0.42.
+    const SPRITESHEET_BASE_DISPLAY_SIZE_PX = BASE_DISPLAY_SIZE_PX * 0.42;
+    let hostDisplaySize = null;
+    const DISPLAY_SCALE_MIN = 0.5;
+    const DISPLAY_SCALE_MAX = 2;
+    const BUBBLE_GAP_PX = 8;
+    const BUBBLE_SCREEN_MARGIN_PX = 12;
+    const BUBBLE_LIST_MIN_HEIGHT_PX = 76;
+    const BUBBLE_LIST_MAX_HEIGHT_PX = 380;
+    const BUBBLE_TOGGLE_NUDGE_PX = 6;
+    // kimi 球(three bundle)在 256 画布内的可见几何:球心居中、半径约 1/8 画布。
+    // 气泡底对齐球体可见上沿(距画布底 62.5%),折叠钮贴球右侧。
+    const THREE_PET_BALL_TOP_FRACTION = 0.625;
+    const THREE_PET_BALL_CENTER_FRACTION = 0.5;
+    const THREE_PET_BALL_RADIUS_FRACTION = 0.125;
+    // 折叠钮圆心对齐球的上部:球心向上半个球半径(约在球的上 1/3 处)。
+    const THREE_PET_TOGGLE_RISE_FRACTION = THREE_PET_BALL_RADIUS_FRACTION * 0.5;
+    const THREE_PET_TOGGLE_SIZE_PX = 30;
+    const THREE_PET_BUBBLE_GAP_PX = 12;
+    const THREE_PET_TOGGLE_GAP_PX = 8;
+    const UI_COPY = {"zh-CN":{"petAria":"桌宠","recentTasksAria":"最近任务","showLess":"更少内容","hideConversationStatus":"隐藏会话状态","showConversationStatuses":"显示 {count} 个会话状态","confirmationBody":"需要你的确认","thinkingBody":"正在思考…","completedBody":"已完成","failedBody":"执行失败","confirmationStatus":"需要确认","completedStatus":"已完成","failedStatus":"执行失败","processingStatus":"正在处理","workedMinutes":"已工作 {minutes} 分钟","untitledConversation":"未命名会话","close":"关闭","clearAll":"清除全部","reply":"回复","quickReplyPlaceholder":"继续任务","sendReply":"发送回复","stopTask":"停止任务","actionFailed":"操作未成功，请查看会话后重试。","interrupted":"任务已中断","closeTaskCard":"关闭“{title}”任务卡片","chooseOption":"请选择一个选项","callingTool":"正在调用工具…","callingToolNamed":"正在调用 {toolName}…","manifestLoadFailed":"pet.json 加载失败","manifestInvalid":"pet.json 格式无效","spritesheetManifestInvalid":"pet.json spritesheet 格式无效","threeLoadFailed":"3D 桌宠加载失败","threeManifestInvalid":"pet.json Three 格式无效"},"en-US":{"petAria":"Desktop pet","recentTasksAria":"Recent tasks","showLess":"Show less","hideConversationStatus":"Hide conversation status","showConversationStatuses":"Conversation statuses: {count}","confirmationBody":"Needs your confirmation","thinkingBody":"Thinking…","completedBody":"Completed","failedBody":"Failed","confirmationStatus":"Needs confirmation","completedStatus":"Completed","failedStatus":"Failed","processingStatus":"Processing","workedMinutes":"Worked for {minutes} min","untitledConversation":"Untitled conversation","close":"Close","clearAll":"Clear all","reply":"Reply","quickReplyPlaceholder":"Continue task","sendReply":"Send reply","stopTask":"Stop task","actionFailed":"Could not complete the action. Check the conversation and try again.","interrupted":"Task interrupted","closeTaskCard":"Close “{title}” task card","chooseOption":"Choose an option","callingTool":"Calling tool…","callingToolNamed":"Calling {toolName}…","manifestLoadFailed":"pet.json failed to load","manifestInvalid":"Invalid pet.json","spritesheetManifestInvalid":"Invalid spritesheet pet.json","threeLoadFailed":"3D pet failed to load","threeManifestInvalid":"Invalid Three pet.json"},"zh-TW":{"petAria":"桌面寵物","recentTasksAria":"最近任務","showLess":"收起","hideConversationStatus":"隱藏會話狀態","showConversationStatuses":"顯示 {count} 個會話狀態","confirmationBody":"需要你的確認","thinkingBody":"正在思考…","completedBody":"已完成","failedBody":"執行失敗","confirmationStatus":"需要確認","completedStatus":"已完成","failedStatus":"執行失敗","processingStatus":"正在處理","workedMinutes":"已工作 {minutes} 分鐘","untitledConversation":"未命名會話","close":"關閉","clearAll":"清除全部","reply":"回覆","quickReplyPlaceholder":"繼續任務","sendReply":"傳送回覆","stopTask":"停止任務","actionFailed":"操作未成功，請查看會話後重試。","interrupted":"任務已中斷","closeTaskCard":"關閉「{title}」任務卡片","chooseOption":"請選擇一個選項","callingTool":"正在呼叫工具…","callingToolNamed":"正在呼叫 {toolName}…","manifestLoadFailed":"無法載入 pet.json","manifestInvalid":"pet.json 格式無效","spritesheetManifestInvalid":"spritesheet pet.json 格式無效","threeLoadFailed":"3D 桌寵載入失敗","threeManifestInvalid":"Three pet.json 格式無效"},"ar":{"petAria":"الحيوان الأليف لسطح المكتب","recentTasksAria":"المهام الأخيرة","showLess":"عرض أقل","hideConversationStatus":"إخفاء حالة المحادثة","showConversationStatuses":"حالات المحادثة: {count}","confirmationBody":"يحتاج إلى تأكيدك","thinkingBody":"جارٍ التفكير…","completedBody":"اكتمل","failedBody":"فشل التنفيذ","confirmationStatus":"يحتاج إلى تأكيد","completedStatus":"اكتمل","failedStatus":"فشل","processingStatus":"جارٍ المعالجة","workedMinutes":"مدة العمل: {minutes} دقيقة","untitledConversation":"محادثة بلا عنوان","close":"إغلاق","clearAll":"مسح الكل","reply":"رد","quickReplyPlaceholder":"متابعة المهمة","sendReply":"إرسال الرد","stopTask":"إيقاف المهمة","actionFailed":"تعذّر إكمال الإجراء. تحقق من المحادثة وحاول مجددًا.","interrupted":"تمت مقاطعة المهمة","closeTaskCard":"إغلاق بطاقة المهمة «{title}»","chooseOption":"اختر خيارًا","callingTool":"جارٍ استدعاء أداة…","callingToolNamed":"جارٍ استدعاء {toolName}…","manifestLoadFailed":"تعذّر تحميل pet.json","manifestInvalid":"ملف pet.json غير صالح","spritesheetManifestInvalid":"ملف spritesheet pet.json غير صالح","threeLoadFailed":"فشل تحميل الحيوان الأليف ثلاثي الأبعاد","threeManifestInvalid":"ملف Three pet.json غير صالح"},"fr":{"petAria":"Animal de bureau","recentTasksAria":"Tâches récentes","showLess":"Réduire","hideConversationStatus":"Masquer l’état des conversations","showConversationStatuses":"États des conversations : {count}","confirmationBody":"Votre confirmation est requise","thinkingBody":"Réflexion en cours…","completedBody":"Terminé","failedBody":"Échec de l’exécution","confirmationStatus":"Confirmation requise","completedStatus":"Terminé","failedStatus":"Échec","processingStatus":"Traitement en cours","workedMinutes":"Temps de travail : {minutes} min","untitledConversation":"Conversation sans titre","close":"Fermer","clearAll":"Tout effacer","reply":"Répondre","quickReplyPlaceholder":"Continuer la tâche","sendReply":"Envoyer la réponse","stopTask":"Arrêter la tâche","actionFailed":"Échec de l’action. Vérifiez la conversation et réessayez.","interrupted":"Tâche interrompue","closeTaskCard":"Fermer la carte de tâche « {title} »","chooseOption":"Choisissez une option","callingTool":"Appel d’un outil…","callingToolNamed":"Appel de {toolName}…","manifestLoadFailed":"Échec du chargement de pet.json","manifestInvalid":"Fichier pet.json non valide","spritesheetManifestInvalid":"Fichier spritesheet pet.json non valide","threeLoadFailed":"Échec du chargement de l'animal 3D","threeManifestInvalid":"Fichier Three pet.json non valide"},"de":{"petAria":"Desktop-Haustier","recentTasksAria":"Letzte Aufgaben","showLess":"Weniger anzeigen","hideConversationStatus":"Unterhaltungsstatus ausblenden","showConversationStatuses":"Unterhaltungsstatus: {count}","confirmationBody":"Deine Bestätigung ist erforderlich","thinkingBody":"Denkt nach…","completedBody":"Abgeschlossen","failedBody":"Fehlgeschlagen","confirmationStatus":"Bestätigung erforderlich","completedStatus":"Abgeschlossen","failedStatus":"Fehlgeschlagen","processingStatus":"Wird verarbeitet","workedMinutes":"Arbeitszeit: {minutes} Min.","untitledConversation":"Unbenannte Unterhaltung","close":"Schließen","clearAll":"Alle löschen","reply":"Antworten","quickReplyPlaceholder":"Aufgabe fortsetzen","sendReply":"Antwort senden","stopTask":"Aufgabe stoppen","actionFailed":"Aktion fehlgeschlagen. Prüfe die Unterhaltung und versuche es erneut.","interrupted":"Aufgabe unterbrochen","closeTaskCard":"Aufgabenkarte „{title}“ schließen","chooseOption":"Wähle eine Option","callingTool":"Tool wird aufgerufen…","callingToolNamed":"{toolName} wird aufgerufen…","manifestLoadFailed":"pet.json konnte nicht geladen werden","manifestInvalid":"Ungültige pet.json","spritesheetManifestInvalid":"Ungültige Spritesheet-pet.json","threeLoadFailed":"3D-Haustier konnte nicht geladen werden","threeManifestInvalid":"Ungültige Three-pet.json"},"id":{"petAria":"Hewan peliharaan desktop","recentTasksAria":"Tugas terbaru","showLess":"Tampilkan lebih sedikit","hideConversationStatus":"Sembunyikan status percakapan","showConversationStatuses":"Status percakapan: {count}","confirmationBody":"Memerlukan konfirmasi Anda","thinkingBody":"Sedang berpikir…","completedBody":"Selesai","failedBody":"Gagal","confirmationStatus":"Perlu konfirmasi","completedStatus":"Selesai","failedStatus":"Gagal","processingStatus":"Sedang diproses","workedMinutes":"Waktu kerja: {minutes} menit","untitledConversation":"Percakapan tanpa judul","close":"Tutup","clearAll":"Hapus semua","reply":"Balas","quickReplyPlaceholder":"Lanjutkan tugas","sendReply":"Kirim balasan","stopTask":"Hentikan tugas","actionFailed":"Tindakan gagal. Periksa percakapan dan coba lagi.","interrupted":"Tugas terhenti","closeTaskCard":"Tutup kartu tugas “{title}”","chooseOption":"Pilih satu opsi","callingTool":"Memanggil alat…","callingToolNamed":"Memanggil {toolName}…","manifestLoadFailed":"pet.json gagal dimuat","manifestInvalid":"pet.json tidak valid","spritesheetManifestInvalid":"Spritesheet pet.json tidak valid","threeLoadFailed":"Peliharaan 3D gagal dimuat","threeManifestInvalid":"Three pet.json tidak valid"},"it":{"petAria":"Pet desktop","recentTasksAria":"Attività recenti","showLess":"Mostra meno","hideConversationStatus":"Nascondi lo stato delle conversazioni","showConversationStatuses":"Stati delle conversazioni: {count}","confirmationBody":"È necessaria la tua conferma","thinkingBody":"Ragionamento in corso…","completedBody":"Completato","failedBody":"Non riuscito","confirmationStatus":"Conferma necessaria","completedStatus":"Completato","failedStatus":"Non riuscito","processingStatus":"Elaborazione in corso","workedMinutes":"Tempo di lavoro: {minutes} min","untitledConversation":"Conversazione senza titolo","close":"Chiudi","clearAll":"Cancella tutto","reply":"Rispondi","quickReplyPlaceholder":"Continua l’attività","sendReply":"Invia risposta","stopTask":"Interrompi attività","actionFailed":"Operazione non riuscita. Controlla la conversazione e riprova.","interrupted":"Attività interrotta","closeTaskCard":"Chiudi la scheda attività “{title}”","chooseOption":"Scegli un’opzione","callingTool":"Chiamata dello strumento…","callingToolNamed":"Chiamata di {toolName}…","manifestLoadFailed":"Impossibile caricare pet.json","manifestInvalid":"pet.json non valido","spritesheetManifestInvalid":"Spritesheet pet.json non valido","threeLoadFailed":"Caricamento dell'animale 3D non riuscito","threeManifestInvalid":"Three pet.json non valido"},"ja":{"petAria":"デスクトップペット","recentTasksAria":"最近のタスク","showLess":"表示を減らす","hideConversationStatus":"会話ステータスを非表示","showConversationStatuses":"会話ステータス: {count}件","confirmationBody":"確認が必要です","thinkingBody":"思考中…","completedBody":"完了","failedBody":"失敗","confirmationStatus":"確認が必要","completedStatus":"完了","failedStatus":"失敗","processingStatus":"処理中","workedMinutes":"作業時間: {minutes}分","untitledConversation":"無題の会話","close":"閉じる","clearAll":"すべてクリア","reply":"返信","quickReplyPlaceholder":"タスクを続ける","sendReply":"返信を送信","stopTask":"タスクを停止","actionFailed":"操作に失敗しました。会話を確認して再試行してください。","interrupted":"タスクが中断されました","closeTaskCard":"「{title}」のタスクカードを閉じる","chooseOption":"選択肢を選んでください","callingTool":"ツールを呼び出し中…","callingToolNamed":"{toolName}を呼び出し中…","manifestLoadFailed":"pet.json の読み込みに失敗しました","manifestInvalid":"pet.json が無効です","spritesheetManifestInvalid":"スプライトシート pet.json が無効です","threeLoadFailed":"3D ペットの読み込みに失敗しました","threeManifestInvalid":"Three pet.json が無効です"},"ko":{"petAria":"데스크톱 펫","recentTasksAria":"최근 작업","showLess":"간단히 보기","hideConversationStatus":"대화 상태 숨기기","showConversationStatuses":"대화 상태: {count}개","confirmationBody":"확인이 필요합니다","thinkingBody":"생각 중…","completedBody":"완료","failedBody":"실패","confirmationStatus":"확인 필요","completedStatus":"완료","failedStatus":"실패","processingStatus":"처리 중","workedMinutes":"작업 시간: {minutes}분","untitledConversation":"제목 없는 대화","close":"닫기","clearAll":"모두 지우기","reply":"답장","quickReplyPlaceholder":"작업 계속","sendReply":"답장 보내기","stopTask":"작업 중지","actionFailed":"작업에 실패했습니다. 대화를 확인하고 다시 시도하세요.","interrupted":"작업이 중단되었습니다","closeTaskCard":"“{title}” 작업 카드 닫기","chooseOption":"옵션을 선택하세요","callingTool":"도구 호출 중…","callingToolNamed":"{toolName} 호출 중…","manifestLoadFailed":"pet.json을 불러오지 못했습니다","manifestInvalid":"pet.json이 올바르지 않습니다","spritesheetManifestInvalid":"스프라이트시트 pet.json이 올바르지 않습니다","threeLoadFailed":"3D 펫을 불러오지 못했습니다","threeManifestInvalid":"Three pet.json이 올바르지 않습니다"},"pt-BR":{"petAria":"Mascote da área de trabalho","recentTasksAria":"Tarefas recentes","showLess":"Mostrar menos","hideConversationStatus":"Ocultar status da conversa","showConversationStatuses":"Status das conversas: {count}","confirmationBody":"Precisa da sua confirmação","thinkingBody":"Pensando…","completedBody":"Concluído","failedBody":"Falhou","confirmationStatus":"Confirmação necessária","completedStatus":"Concluído","failedStatus":"Falhou","processingStatus":"Processando","workedMinutes":"Tempo de trabalho: {minutes} min","untitledConversation":"Conversa sem título","close":"Fechar","clearAll":"Limpar tudo","reply":"Responder","quickReplyPlaceholder":"Continuar tarefa","sendReply":"Enviar resposta","stopTask":"Parar tarefa","actionFailed":"Não foi possível concluir a ação. Confira a conversa e tente novamente.","interrupted":"Tarefa interrompida","closeTaskCard":"Fechar cartão da tarefa “{title}”","chooseOption":"Escolha uma opção","callingTool":"Chamando ferramenta…","callingToolNamed":"Chamando {toolName}…","manifestLoadFailed":"Falha ao carregar pet.json","manifestInvalid":"pet.json inválido","spritesheetManifestInvalid":"Spritesheet pet.json inválido","threeLoadFailed":"Falha ao carregar o pet 3D","threeManifestInvalid":"Three pet.json inválido"},"ru":{"petAria":"Питомец на рабочем столе","recentTasksAria":"Недавние задачи","showLess":"Показать меньше","hideConversationStatus":"Скрыть статус диалогов","showConversationStatuses":"Статусы диалогов: {count}","confirmationBody":"Требуется ваше подтверждение","thinkingBody":"Обдумывание…","completedBody":"Завершено","failedBody":"Ошибка выполнения","confirmationStatus":"Требуется подтверждение","completedStatus":"Завершено","failedStatus":"Ошибка","processingStatus":"Обработка","workedMinutes":"Время работы: {minutes} мин","untitledConversation":"Диалог без названия","close":"Закрыть","clearAll":"Очистить все","reply":"Ответить","quickReplyPlaceholder":"Продолжить задачу","sendReply":"Отправить ответ","stopTask":"Остановить задачу","actionFailed":"Не удалось выполнить действие. Проверьте разговор и повторите попытку.","interrupted":"Задача прервана","closeTaskCard":"Закрыть карточку задачи «{title}»","chooseOption":"Выберите вариант","callingTool":"Вызов инструмента…","callingToolNamed":"Вызов {toolName}…","manifestLoadFailed":"Не удалось загрузить pet.json","manifestInvalid":"Недопустимый pet.json","spritesheetManifestInvalid":"Недопустимый spritesheet pet.json","threeLoadFailed":"Не удалось загрузить 3D-питомца","threeManifestInvalid":"Недопустимый Three pet.json"},"es-419":{"petAria":"Mascota de escritorio","recentTasksAria":"Tareas recientes","showLess":"Mostrar menos","hideConversationStatus":"Ocultar estado de conversación","showConversationStatuses":"Estados de conversación: {count}","confirmationBody":"Necesita tu confirmación","thinkingBody":"Pensando…","completedBody":"Completada","failedBody":"Falló","confirmationStatus":"Confirmación necesaria","completedStatus":"Completada","failedStatus":"Falló","processingStatus":"Procesando","workedMinutes":"Tiempo de trabajo: {minutes} min","untitledConversation":"Conversación sin título","close":"Cerrar","clearAll":"Borrar todo","reply":"Responder","quickReplyPlaceholder":"Continuar la tarea","sendReply":"Enviar respuesta","stopTask":"Detener la tarea","actionFailed":"No se pudo completar la acción. Revisa la conversación e inténtalo de nuevo.","interrupted":"Tarea interrumpida","closeTaskCard":"Cerrar tarjeta de tarea “{title}”","chooseOption":"Elige una opción","callingTool":"Llamando a una herramienta…","callingToolNamed":"Llamando a {toolName}…","manifestLoadFailed":"No se pudo cargar pet.json","manifestInvalid":"pet.json no válido","spritesheetManifestInvalid":"Spritesheet pet.json no válido","threeLoadFailed":"No se pudo cargar la mascota 3D","threeManifestInvalid":"Three pet.json no válido"},"th":{"petAria":"สัตว์เลี้ยงบนเดสก์ท็อป","recentTasksAria":"งานล่าสุด","showLess":"แสดงน้อยลง","hideConversationStatus":"ซ่อนสถานะการสนทนา","showConversationStatuses":"สถานะการสนทนา: {count}","confirmationBody":"ต้องการการยืนยันจากคุณ","thinkingBody":"กำลังคิด…","completedBody":"เสร็จสมบูรณ์","failedBody":"ล้มเหลว","confirmationStatus":"ต้องยืนยัน","completedStatus":"เสร็จสมบูรณ์","failedStatus":"ล้มเหลว","processingStatus":"กำลังประมวลผล","workedMinutes":"เวลาทำงาน: {minutes} นาที","untitledConversation":"การสนทนาไม่มีชื่อ","close":"ปิด","clearAll":"ล้างทั้งหมด","reply":"ตอบกลับ","quickReplyPlaceholder":"ทำงานต่อ","sendReply":"ส่งคำตอบ","stopTask":"หยุดงาน","actionFailed":"ดำเนินการไม่สำเร็จ โปรดตรวจสอบการสนทนาแล้วลองอีกครั้ง","interrupted":"งานถูกขัดจังหวะ","closeTaskCard":"ปิดการ์ดงาน “{title}”","chooseOption":"เลือกตัวเลือก","callingTool":"กำลังเรียกใช้เครื่องมือ…","callingToolNamed":"กำลังเรียกใช้ {toolName}…","manifestLoadFailed":"โหลด pet.json ไม่สำเร็จ","manifestInvalid":"pet.json ไม่ถูกต้อง","spritesheetManifestInvalid":"Spritesheet pet.json ไม่ถูกต้อง","threeLoadFailed":"โหลดสัตว์เลี้ยง 3D ไม่สำเร็จ","threeManifestInvalid":"Three pet.json ไม่ถูกต้อง"},"tr":{"petAria":"Masaüstü evcil hayvanı","recentTasksAria":"Son görevler","showLess":"Daha az göster","hideConversationStatus":"Konuşma durumunu gizle","showConversationStatuses":"Konuşma durumları: {count}","confirmationBody":"Onayınız gerekiyor","thinkingBody":"Düşünüyor…","completedBody":"Tamamlandı","failedBody":"Başarısız","confirmationStatus":"Onay gerekiyor","completedStatus":"Tamamlandı","failedStatus":"Başarısız","processingStatus":"İşleniyor","workedMinutes":"Çalışma süresi: {minutes} dk","untitledConversation":"Adsız konuşma","close":"Kapat","clearAll":"Tümünü temizle","reply":"Yanıtla","quickReplyPlaceholder":"Göreve devam et","sendReply":"Yanıtı gönder","stopTask":"Görevi durdur","actionFailed":"İşlem tamamlanamadı. Konuşmayı kontrol edip tekrar deneyin.","interrupted":"Görev kesintiye uğradı","closeTaskCard":"“{title}” görev kartını kapat","chooseOption":"Bir seçenek belirleyin","callingTool":"Araç çağrılıyor…","callingToolNamed":"{toolName} çağrılıyor…","manifestLoadFailed":"pet.json yüklenemedi","manifestInvalid":"Geçersiz pet.json","spritesheetManifestInvalid":"Geçersiz spritesheet pet.json","threeLoadFailed":"3D evcil hayvan yüklenemedi","threeManifestInvalid":"Geçersiz Three pet.json"},"vi":{"petAria":"Thú cưng trên màn hình","recentTasksAria":"Nhiệm vụ gần đây","showLess":"Hiển thị ít hơn","hideConversationStatus":"Ẩn trạng thái cuộc trò chuyện","showConversationStatuses":"Trạng thái cuộc trò chuyện: {count}","confirmationBody":"Cần bạn xác nhận","thinkingBody":"Đang suy nghĩ…","completedBody":"Đã hoàn tất","failedBody":"Thất bại","confirmationStatus":"Cần xác nhận","completedStatus":"Đã hoàn tất","failedStatus":"Thất bại","processingStatus":"Đang xử lý","workedMinutes":"Thời gian làm việc: {minutes} phút","untitledConversation":"Cuộc trò chuyện không có tiêu đề","close":"Đóng","clearAll":"Xóa tất cả","reply":"Trả lời","quickReplyPlaceholder":"Tiếp tục nhiệm vụ","sendReply":"Gửi trả lờik","stopTask":"Dừng nhiệm vụ","actionFailed":"Không thể hoàn tất thao tác. Kiểm tra cuộc trò chuyện rồi thử lại.","interrupted":"Tác vụ bị gián đoạn","closeTaskCard":"Đóng thẻ nhiệm vụ “{title}”","chooseOption":"Chọn một tùy chọn","callingTool":"Đang gọi công cụ…","callingToolNamed":"Đang gọi {toolName}…","manifestLoadFailed":"Không tải được pet.json","manifestInvalid":"pet.json không hợp lệ","spritesheetManifestInvalid":"Spritesheet pet.json không hợp lệ","threeLoadFailed":"Không tải được thú cưng 3D","threeManifestInvalid":"Three pet.json không hợp lệ"}};
+    const UI_COPY_LOCALES = Object.keys(UI_COPY);
+    // Keep this function self-contained in the generated HTML. Protected
+    // releases obfuscate the surrounding bundle, so serializing a bundled
+    // function with toString() can leave references to bundle-only decoders.
+    const resolveCopyLocale = function resolveCopyLocale(
+      value,
+      availableLocales
+    ) {
+      const raw = typeof value === 'string' ? value.trim() : '';
+      const normalized = (raw || 'en-US').replaceAll('_', '-').toLowerCase();
+      const exact = availableLocales.find(
+        (locale) => locale.toLowerCase() === normalized
+      );
+      if (exact !== undefined) return exact;
+
+      const primary = normalized.split('-')[0] || '';
+      if (primary === 'zh') {
+        const traditional = /(?:^|-)(?:hant|tw|hk|mo)(?:-|$)/u.test(normalized);
+        const preferred = traditional ? 'zh-TW' : 'zh-CN';
+        const matched = availableLocales.find(
+          (locale) => locale.toLowerCase() === preferred.toLowerCase()
+        );
+        if (matched !== undefined) return matched;
+      }
+      if (primary === 'pt') {
+        const matched = availableLocales.find(
+          (locale) => locale.toLowerCase() === 'pt-br'
+        );
+        if (matched !== undefined) return matched;
+      }
+      if (primary === 'es') {
+        const matched = availableLocales.find(
+          (locale) => locale.toLowerCase() === 'es-419'
+        );
+        if (matched !== undefined) return matched;
+      }
+
+      const languageMatch = availableLocales.find(
+        (locale) => locale.toLowerCase().split('-')[0] === primary
+      );
+      if (languageMatch !== undefined) return languageMatch;
+      return (
+        availableLocales.find((locale) => locale.toLowerCase() === 'en-us') ||
+        availableLocales[0] ||
+        'en-US'
+      );
+    };
+    const SPRITE_ALPHA_THRESHOLD = 8;
+    const MAX_VISIBLE_BOUNDS_SCAN_PIXELS = 4_000_000;
+    // 预览模式(设置页桌宠缩略渲染):宿主在文档 URL 上带 ?petPreview=1。
+    // 只渲染 three 桌宠的 idle 呼吸悬浮 + 钉住左上注视;不注册任何光标/命中/
+    // 拖拽交互,也不向宿主上报交互区域(整窗对 OS 鼠标保持透明由宿主 iframe 决定)
+    const PET_PREVIEW = (() => {
+      try {
+        return new URLSearchParams(window.location.search).get('petPreview') === '1';
+      } catch {
+        return false;
+      }
+    })();
+    const THREE_PET_STATES = Object.freeze([
+      'idle',
+      'working',
+      'waiting',
+      'failed',
+      'running_left',
+      'running_right'
+    ]);
+function reduceBubbleDisplay(count, bubbleVisible, listExpanded) {
+    if (!(count > 0)) return "hidden";
+    if (!bubbleVisible) return "count";
+    if (listExpanded && count > 1) return "expanded";
+    return "stacked";
+}
+
+function nextBubbleDisplayOnToggle(display) {
+    if (display === "count") return "stacked";
+    if (display === "stacked") return "count";
+    if (display === "expanded") return "stacked";
+    return "hidden";
+}
+
+function nextBubbleDisplayOnCardActivate(display, count) {
+    if (display === "stacked" && count > 1) return "expanded";
+    return display;
+}
+
+function shouldExpandBubbleBeforeAction(display, count) {
+    return display === "stacked" && count > 1;
+}
+
+function bubbleStackedLayerCount(count) {
+    if (count >= 3) return 2;
+    if (count === 2) return 1;
+    return 0;
+}
+
+function isBubbleCardVisible(index, display) {
+    if (display === "expanded") return true;
+    if (display === "stacked") return index === 0;
+    return false;
+}
+
+function deriveBubbleCardIconKind(activity) {
+    if (activity.runState === "failed") return "error";
+    if (activity.runState === "idle") return "complete";
+    if (activity.petState === "waiting" || activity.awaitingApproval === true) return "info";
+    const part = activity.latestPart;
+    if (activity.runState === "running" && part && typeof part === "object" && "kind" in part && part.kind === "tool-result" && "isError" in part && part.isError === true) return "error";
+    return "none";
+}
+
+function deriveBubbleCardTitle(title, untitledTitle) {
+    return typeof title === "string" && title.trim() ? title.trim() : untitledTitle;
+}
+
+function deriveBubbleCardBody(activity, copy) {
+    const maxLength = 500;
+    const progressText = typeof activity.progressText === "string" ? activity.progressText.trim().slice(0, maxLength) : "";
+    const completedText = typeof activity.text === "string" && activity.text.trim() ? activity.text.trim().slice(0, maxLength) : "";
+    if (activity.runState === "running" && deriveBubbleCardIconKind(activity) === "error") {
+        return completedText || copy.failedBody;
+    }
+    return activity.petState === "waiting" ? completedText || copy.confirmationBody : activity.runState === "running" ? progressText || copy.thinkingBody : activity.runState === "failed" ? completedText || copy.interrupted || copy.failedBody || copy.completedBody : completedText || copy.completedBody;
+}
+
+function shouldIncludeConversationActivity(conversation) {
+    return Boolean(conversation && typeof conversation.id === "string" && typeof conversation.title === "string" && (conversation.runState === "idle" || conversation.runState === "running" || conversation.runState === "failed"));
+}
+
+function conversationPetState(conversation) {
+    if (conversation.runState === "failed") return "failed";
+    if (conversation.runState !== "running") return "idle";
+    const part = conversation.latestPart;
+    if (part && typeof part === "object" && part.kind === "interaction") {
+        return "waiting";
+    }
+    return "working";
+}
+
+function activityDismissalKey(activity) {
+    const turnId = typeof activity.turnId === "string" ? activity.turnId.trim() : "";
+    return turnId ? [
+        "turn",
+        String(activity.id),
+        turnId
+    ].join("\u0000") : [
+        "legacy",
+        String(activity.id),
+        String(activity.title ?? ""),
+        String(activity.runState ?? ""),
+        String(activity.petState ?? ""),
+        typeof activity.progressText === "string" ? activity.progressText : "",
+        typeof activity.text === "string" ? activity.text : ""
+    ].join("\u0000");
+}
+
+function resolveBubbleHorizontalCenter(anchorX, bubbleWidth, viewportWidth, margin) {
+    if (![
+        anchorX,
+        bubbleWidth,
+        viewportWidth,
+        margin
+    ].every(Number.isFinite) || bubbleWidth <= 0 || viewportWidth <= 0) {
+        return viewportWidth / 2;
+    }
+    const safeMargin = Math.max(0, margin);
+    const minimum = safeMargin + bubbleWidth / 2;
+    const maximum = viewportWidth - safeMargin - bubbleWidth / 2;
+    if (minimum > maximum) return viewportWidth / 2;
+    return Math.min(maximum, Math.max(minimum, anchorX));
+}
+
+function resolveBubbleVerticalPlacement(aboveY, belowY, desiredHeight, viewportHeight, margin, topControlsHeight) {
+    const above = Math.max(0, aboveY - margin - topControlsHeight);
+    const below = Math.max(0, viewportHeight - belowY - margin - topControlsHeight);
+    const useBelow = desiredHeight > above && below > above;
+    return {
+        below: useBelow,
+        anchor: useBelow ? Math.max(margin, belowY) + topControlsHeight : Math.min(viewportHeight - margin, aboveY),
+        maxHeight: useBelow ? below : above
+    };
+}
+
+function resolveBubbleToggleLeft(petLeft, petRight, toggleWidth, viewportWidth, gap, margin) {
+    const right = petRight + gap;
+    const preferred = right + toggleWidth <= viewportWidth - margin ? right : petLeft - gap - toggleWidth;
+    return Math.max(margin, Math.min(viewportWidth - margin - toggleWidth, preferred));
+}
+
+function resolveBubbleListMaxHeight(availableHeight, minHeight, maxHeight) {
+    const safeAvailable = Number.isFinite(availableHeight) ? Math.max(0, availableHeight) : 0;
+    return Math.min(maxHeight, Math.max(minHeight, safeAvailable));
+}
+
+function alignBubbleListHeight(maximumHeight, cardHeight, gap) {
+    if (!(cardHeight > 0)) return maximumHeight;
+    const safeGap = Number.isFinite(gap) && gap > 0 ? gap : 0;
+    const visibleCardCount = Math.max(1, Math.floor((maximumHeight + safeGap) / (cardHeight + safeGap)));
+    const alignedHeight = visibleCardCount * cardHeight + Math.max(0, visibleCardCount - 1) * safeGap;
+    return Math.min(maximumHeight, Math.ceil(alignedHeight));
+}
+
+function resolveBubbleReplyText(draft, placeholder) {
+    const text = typeof draft === "string" ? draft.trim() : "";
+    return text || placeholder;
+}
+
+function formatBubbleCount(count, localeTag) {
+    const safeCount = Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
+    try {
+        return new Intl.NumberFormat(localeTag).format(safeCount);
+    } catch  {
+        return String(safeCount);
+    }
+}
+
+    function initPetBubbleController(deps) {
+      'use strict';
+      const stage = deps.stage;
+      const bubble = deps.bubble;
+      const header = deps.header;
+      const clearAllButton = deps.clearAll;
+      const list = deps.list;
+      const toggle = deps.toggle;
+      const toggleIcon = deps.toggleIcon;
+      const toggleCount = deps.toggleCount;
+      const closeLayer = deps.closeLayer;
+      const stackLayers = deps.stackLayers;
+
+      let activities = [];
+      let bubbleVisible = true;
+      let listExpanded = false;
+      let transitionToken = 0;
+      let previousFirstId = null;
+      let replyOpenForId = null;
+      let replySending = false;
+      let replyComposing = false;
+      const replyDrafts = new Map();
+      const actionErrors = new Set();
+      const dismissedActivityKeys = new Map();
+      const notifiedTurns = new Map();
+      let notificationId = null;
+      // 当前应显示 × 的卡片 id(指针/焦点落在卡片或 × 上);隐藏带宽限防抖
+      let closeRevealId = null;
+      let closeHideTimer = 0;
+
+      const ICON_SVGS = {
+        complete: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M16.0856 4.92109C16.3785 4.62831 16.8539 4.62823 17.1468 4.92109C17.4394 5.21396 17.4395 5.68945 17.1468 5.98228L8.04926 15.079C7.75644 15.3718 7.28179 15.3716 6.98888 15.079L2.85313 10.944C2.5605 10.6512 2.56052 10.1765 2.85313 9.88365C3.14603 9.59083 3.62146 9.59078 3.91433 9.88365L7.51866 13.488L16.0856 4.92109Z" fill="currentColor"></path></svg>',
+        info: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M9.99963 1.75C14.5561 1.75 18.2496 5.44354 18.2496 10C18.2496 14.5565 14.5561 18.25 9.99963 18.25C5.44317 18.25 1.74963 14.5565 1.74963 10C1.74963 5.44354 5.44317 1.75 9.99963 1.75ZM9.99963 3.25C6.2716 3.25 3.24963 6.27196 3.24963 10C3.24963 13.728 6.2716 16.75 9.99963 16.75C13.7277 16.75 16.7496 13.728 16.7496 10C16.7496 6.27196 13.7277 3.25 9.99963 3.25ZM9.99963 7.91699C10.4138 7.91699 10.7496 8.22527 10.7496 8.60547V13.8945C10.7496 14.2747 10.4138 14.583 9.99963 14.583C9.58542 14.583 9.24963 14.2747 9.24963 13.8945V8.60547C9.24963 8.22527 9.58542 7.91699 9.99963 7.91699ZM9.99963 5.41602C10.4136 5.41602 10.7495 5.75211 10.7496 6.16602C10.7496 6.58 10.4136 6.91699 9.99963 6.91699C9.58513 6.91681 9.24963 6.57988 9.24963 6.16602C9.24972 5.75223 9.58519 5.4162 9.99963 5.41602Z" fill="currentColor"></path></svg>',
+        error: '<svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="7.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10 5.75v5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><circle cx="10" cy="14" r=".85" fill="currentColor"/></svg>',
+        close: '<svg viewBox="20.57 15.43 20 20" aria-hidden="true"><path d="M27.3939 22.2511C27.7286 21.9163 28.2713 21.9163 28.6061 22.2511L30.5714 24.2164L32.5367 22.2511C32.8715 21.9163 33.4142 21.9163 33.7489 22.2511C34.0836 22.5858 34.0836 23.1285 33.7489 23.4632L31.7836 25.4286L33.7489 27.3939C34.0836 27.7286 34.0836 28.2714 33.7489 28.6061C33.4142 28.9408 32.8715 28.9408 32.5367 28.6061L30.5714 26.6408L28.6061 28.6061C28.2713 28.9408 27.7286 28.9408 27.3939 28.6061C27.0591 28.2714 27.0591 27.7286 27.3939 27.3939L29.3592 25.4286L27.3939 23.4632C27.0591 23.1285 27.0591 22.5858 27.3939 22.2511Z" fill="currentColor" fill-rule="evenodd" clip-rule="evenodd"></path></svg>',
+        send: '<svg viewBox="0 0 12 12" aria-hidden="true"><path d="M6 10V2M2.5 5.5 6 2l3.5 3.5" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6"></path></svg>',
+        reply: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M9.91669 1.83328C14.473 1.83328 18.1667 5.52693 18.1667 10.0833C18.1667 14.6396 14.473 18.3333 9.91669 18.3333H3.16766C2.27488 18.3333 1.66981 17.4244 2.01434 16.6009L2.91571 14.4495C2.1244 13.1829 1.66669 11.6854 1.66669 10.0833C1.66669 5.52693 5.36034 1.83328 9.91669 1.83328ZM9.91669 3.33328C6.18877 3.33328 3.16669 6.35536 3.16669 10.0833C3.16669 11.5187 3.6139 12.8475 4.37665 13.9407L4.61298 14.2796L3.54364 16.8333H9.91571C13.6436 16.8333 16.6667 13.8112 16.6667 10.0833C16.6667 6.35536 13.6446 3.33328 9.91669 3.33328ZM7.46161 9.00027C8.12893 9.00027 8.66957 9.54098 8.66962 10.2083C8.66962 10.8756 8.12895 11.4163 7.46161 11.4163C6.79426 11.4163 6.2536 10.8756 6.2536 10.2083C6.25364 9.54098 6.79429 9.00027 7.46161 9.00027ZM12.6276 9.00027C13.2949 9.00028 13.8356 9.54098 13.8356 10.2083C13.8356 10.8756 13.295 11.4163 12.6276 11.4163C11.9603 11.4163 11.4196 10.8756 11.4196 10.2083C11.4197 9.54098 11.9603 9.00027 12.6276 9.00027Z" fill="currentColor"></path></svg>',
+        stop: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M6.48356 7.42004C6.25 7.87843 6.25 8.4785 6.25 9.67863V10.3214C6.25 11.5215 6.25 12.1216 6.48356 12.58C6.68901 12.9832 7.01683 13.311 7.42004 13.5164C7.87843 13.75 8.4785 13.75 9.67863 13.75H10.3214C11.5215 13.75 12.1216 13.75 12.58 13.5164C12.9832 13.311 13.311 12.9832 13.5164 12.58C13.75 12.1216 13.75 11.5215 13.75 10.3214V9.67863C13.75 8.4785 13.75 7.87843 13.5164 7.42004C13.311 7.01683 12.9832 6.68901 12.58 6.48356C12.1216 6.25 11.5215 6.25 10.3214 6.25H9.67863C8.4785 6.25 7.87843 6.25 7.42004 6.48356C7.01683 6.68901 6.68901 7.01683 6.48356 7.42004Z" fill="currentColor" fill-rule="evenodd" clip-rule="evenodd"></path></svg>'
+      };
+
+      function copy() {
+        return deps.getCopy();
+      }
+
+      function orderedActivities() {
+        const visible = activities.filter(
+          (activity) =>
+            dismissedActivityKeys.get(activity.id) !==
+            activityDismissalKey(activity)
+        );
+        const index = visible.findIndex((activity) => activity.id === notificationId);
+        if (index > 0) visible.unshift(visible.splice(index, 1)[0]);
+        return visible;
+      }
+
+      function currentDisplay() {
+        return reduceBubbleDisplay(
+          orderedActivities().length,
+          bubbleVisible,
+          listExpanded
+        );
+      }
+
+      // 正式协议:宿主注入的 window.DaimonWidget.conversations(send/cancel),
+      // conversationId 带 conversation: 前缀,返回 Promise<{accepted,...}>。
+      function widgetConversationsApi() {
+        const widget = window.DaimonWidget;
+        const conversations = widget && widget.conversations;
+        return conversations && typeof conversations === 'object'
+          ? conversations
+          : null;
+      }
+
+      function closeCardLabel(title) {
+        return deps.formatCopy(copy().closeTaskCard, { title });
+      }
+
+      function animateElement(element, keyframes, options) {
+        if (
+          deps.isReducedMotion() ||
+          !element ||
+          typeof element.animate !== 'function'
+        ) {
+          return null;
+        }
+        return element.animate(keyframes, options);
+      }
+
+      function clearAnimations() {
+        if (typeof bubble.getAnimations !== 'function') return;
+        bubble
+          .getAnimations({ subtree: true })
+          .forEach((animation) => animation.cancel());
+      }
+
+      function setKeyboardNavigation(enabled) {
+        document.documentElement.classList.toggle(
+          'keyboard-navigation',
+          enabled
+        );
+      }
+
+      function updateToggle() {
+        const count = orderedActivities().length;
+        const counted = currentDisplay() === 'count';
+        toggle.style.display = count > 0 ? 'grid' : 'none';
+        toggleIcon.style.display = counted ? 'none' : 'block';
+        toggleCount.style.display = counted ? 'block' : 'none';
+        toggleCount.textContent = formatBubbleCount(count, deps.getLocaleTag());
+        toggle.setAttribute('aria-expanded', counted ? 'false' : 'true');
+        toggle.setAttribute(
+          'aria-label',
+          counted
+            ? deps.formatCopy(copy().showConversationStatuses, { count })
+            : copy().hideConversationStatus
+        );
+      }
+
+      function updateScrollFade() {
+        syncClosePositions();
+        if (currentDisplay() !== 'expanded') {
+          list.style.removeProperty('--pet-list-fade-top');
+          list.style.removeProperty('--pet-list-fade-bottom');
+          return;
+        }
+        const canScrollUp = list.scrollTop > 1;
+        const canScrollDown =
+          list.scrollTop + list.clientHeight < list.scrollHeight - 1;
+        list.style.setProperty(
+          '--pet-list-fade-top',
+          canScrollUp ? '18px' : '0px'
+        );
+        list.style.setProperty(
+          '--pet-list-fade-bottom',
+          canScrollDown ? '18px' : '0px'
+        );
+      }
+
+      function scrollCardIntoCenter(card) {
+        if (typeof card.scrollIntoView !== 'function') return;
+        card.scrollIntoView({
+          block: 'center',
+          behavior: deps.isReducedMotion() ? 'auto' : 'smooth'
+        });
+      }
+
+      function replyCardFor(idValue) {
+        return (
+          [...list.querySelectorAll('.conversation-card')].find(
+            (card) => card.dataset.conversationId === idValue
+          ) || null
+        );
+      }
+
+      function closeButtonFor(idValue) {
+        return (
+          [
+            ...closeLayer.querySelectorAll('.conversation-bubble-close')
+          ].find(
+            (button) => button.dataset.conversationId === idValue
+          ) || null
+        );
+      }
+
+      // × 只在指针或键盘焦点落到对应卡片(或 × 本身)时显示;离开后经
+      // 140ms 宽限再隐藏,避免卡片与 × 重叠区交界处闪烁。可见性变化后
+      // 通过 deps.onCloseRevealChange 让宿主重算交互区(× 凸出气泡 rect,
+      // 不重算会有半个 × 点不到)。滚出 scrollport 的隐藏仍由
+      // syncClosePositions 统一维护。
+      function revealClose(idValue) {
+        if (closeHideTimer) {
+          clearTimeout(closeHideTimer);
+          closeHideTimer = 0;
+        }
+        if (closeRevealId === idValue) return;
+        closeRevealId = idValue;
+        syncClosePositions();
+        deps.onCloseRevealChange();
+      }
+      function scheduleHideClose(idValue) {
+        if (closeRevealId !== idValue) return;
+        if (closeHideTimer) clearTimeout(closeHideTimer);
+        closeHideTimer = setTimeout(() => {
+          closeHideTimer = 0;
+          closeRevealId = null;
+          syncClosePositions();
+          deps.onCloseRevealChange();
+        }, 140);
+      }
+      function syncCloseButtons(recent, cards) {
+        const buttons = [];
+        recent.forEach((activity, index) => {
+          const card = cards[index];
+          if (!card) return;
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.className = 'conversation-bubble-close';
+          button.dataset.conversationId = activity.id;
+          button.innerHTML = ICON_SVGS.close;
+          button.setAttribute(
+            'aria-label',
+            closeCardLabel(
+              deriveBubbleCardTitle(activity.title, copy().untitledConversation)
+            )
+          );
+          button.addEventListener('click', (event) => {
+            event.stopPropagation();
+            if (
+              shouldExpandBubbleBeforeAction(
+                currentDisplay(),
+                orderedActivities().length
+              )
+            ) {
+              void setListExpanded(true);
+              return;
+            }
+            dismissCard(activity, card);
+          });
+          button.addEventListener('pointerenter', () =>
+            revealClose(activity.id)
+          );
+          button.addEventListener('pointerleave', () =>
+            scheduleHideClose(activity.id)
+          );
+          button.addEventListener('focusin', () => revealClose(activity.id));
+          button.addEventListener('focusout', () =>
+            scheduleHideClose(activity.id)
+          );
+          buttons.push(button);
+        });
+        closeLayer.replaceChildren(...buttons);
+        syncClosePositions();
+      }
+
+      // 叠放假层是气泡的兄弟层(z 序在 three canvas 之下),几何跟随主卡:
+      // 比主卡低 5px、与主卡同高,宽度由 CSS 内缩。anchor 移动/resize 会经
+      // syncVerticalLayout 改 bubble 位置,所以那里也要重同步;量不到有效
+      // 主卡(卡片隐藏或 0 尺寸)时隐藏假层,不留陈旧位置。坐标走布局链
+      // (offsetTop/offsetHeight)而不是 getBoundingClientRect:气泡入场过渡
+      // 的 transform 会让 rect 落在动画中间态,布局坐标始终是最终位置。
+      function syncStackLayers() {
+        if (!stackLayers) return;
+        if (currentDisplay() !== 'stacked') return;
+        const card = list.querySelector('.conversation-card:not([hidden])');
+        if (!card || !(card.offsetWidth > 0) || !(card.offsetHeight > 0)) {
+          stackLayers.style.visibility = 'hidden';
+          return;
+        }
+        stackLayers.style.visibility = '';
+        stackLayers.style.top =
+          String(bubble.offsetTop + list.offsetTop + card.offsetTop + 5) + 'px';
+        stackLayers.style.height = String(card.offsetHeight) + 'px';
+      }
+
+      function syncClosePositions() {
+        const scrollTop = list.scrollTop;
+        const listClientHeight = list.clientHeight;
+        for (const button of closeLayer.querySelectorAll(
+          '.conversation-bubble-close'
+        )) {
+          const card = replyCardFor(button.dataset.conversationId);
+          if (!card || card.hidden) {
+            button.hidden = true;
+            continue;
+          }
+          const visualTop = card.offsetTop - scrollTop;
+          const visiblePx =
+            Math.min(visualTop + card.offsetHeight, listClientHeight) -
+            Math.max(visualTop, 0);
+          const offscreen = visiblePx < card.offsetHeight * 0.5;
+          button.hidden =
+            offscreen || button.dataset.conversationId !== closeRevealId;
+          button.style.left = String(list.offsetLeft + card.offsetLeft - 7) + 'px';
+          button.style.top = String(list.offsetTop + visualTop - 7) + 'px';
+        }
+      }
+
+      function replySectionFor(idValue) {
+        const card = replyCardFor(idValue);
+        return card
+          ? card.querySelector('.conversation-card-reply-section')
+          : null;
+      }
+
+      function syncReplyBarAria() {
+        list
+          .querySelectorAll('.conversation-card-reply')
+          .forEach((button) => {
+            const card = button.closest('.conversation-card');
+            button.setAttribute(
+              'aria-expanded',
+              card && card.dataset.conversationId === replyOpenForId
+                ? 'true'
+                : 'false'
+            );
+          });
+      }
+
+      function closeReplyBar() {
+        if (replyOpenForId === null) return;
+        deps.onReplyKeyboardFocus?.(false);
+        replyOpenForId = null;
+        replySending = false;
+        replyComposing = false;
+        for (const section of list.querySelectorAll(
+          '.conversation-card-reply-section'
+        )) {
+          section.hidden = true;
+        }
+        syncReplyBarAria();
+        deps.onDidRender({
+          wasVisible: stage.classList.contains('bubble-visible')
+        });
+      }
+
+      function openReplyBar(activity, card) {
+        const previousSection = replyOpenForId === null ? null : replySectionFor(replyOpenForId);
+        if (previousSection) previousSection.hidden = true;
+        replyOpenForId = activity.id;
+        replySending = false;
+        replyComposing = false;
+        const section = card.querySelector('.conversation-card-reply-section');
+        const input = section.querySelector('.conversation-card-reply-input');
+        const send = card.querySelector('.conversation-card-reply-send');
+        section.hidden = false;
+        input.disabled = false;
+        send.disabled = false;
+        input.value = replyDrafts.get(activity.id) || '';
+        syncReplyBarAria();
+        scrollCardIntoCenter(card);
+        deps.onReplyKeyboardFocus?.(true);
+        if (typeof input.focus === 'function') {
+          input.focus({ preventScroll: true });
+        }
+        deps.onDidRender({
+          wasVisible: stage.classList.contains('bubble-visible')
+        });
+      }
+
+      async function submitReply() {
+        if (replyOpenForId === null || replySending) return;
+        const api = widgetConversationsApi();
+        const activity =
+          activities.find((item) => item.id === replyOpenForId) || null;
+        if (!api || typeof api.send !== 'function' || !activity) {
+          closeReplyBar();
+          return;
+        }
+        const section = replySectionFor(replyOpenForId);
+        const input = section
+          ? section.querySelector('.conversation-card-reply-input')
+          : null;
+        const send = section
+          ? section.querySelector('.conversation-card-reply-send')
+          : null;
+        actionErrors.delete(activity.id);
+        const text = resolveBubbleReplyText(
+          input ? input.value : replyDrafts.get(activity.id),
+          copy().quickReplyPlaceholder
+        );
+        replySending = true;
+        if (input) input.disabled = true;
+        if (send) send.disabled = true;
+        let accepted = false;
+        try {
+          const result = await api.send(activity.id, text);
+          accepted = Boolean(result && result.accepted === true);
+        } catch {
+          accepted = false;
+        }
+        if (accepted) {
+          replyDrafts.delete(activity.id);
+          if (replyOpenForId === activity.id) closeReplyBar();
+          return;
+        }
+        // 失败保草稿、解除禁用、不关闭,并给该会话卡片标记错误态
+        actionErrors.add(activity.id);
+        replySending = false;
+        if (input) input.disabled = false;
+        if (send) send.disabled = false;
+        render();
+      }
+
+      function syncReplyBarPlacement(restoreFocus) {
+        if (replyOpenForId === null) return;
+        const display = currentDisplay();
+        const target = replyCardFor(replyOpenForId);
+        const allowed = display === 'stacked' || display === 'expanded';
+        if (!allowed || !target || target.hidden) {
+          closeReplyBar();
+          return;
+        }
+        const section = target.querySelector('.conversation-card-reply-section');
+        const input = section.querySelector('.conversation-card-reply-input');
+        const send = target.querySelector('.conversation-card-reply-send');
+        section.hidden = false;
+        replySending = false;
+        input.disabled = false;
+        send.disabled = false;
+        input.value = replyDrafts.get(replyOpenForId) || '';
+        syncReplyBarAria();
+        if (restoreFocus && typeof input.focus === 'function') {
+          input.focus({ preventScroll: true });
+        }
+      }
+
+      function dismissCard(activity, card) {
+        dismissedActivityKeys.set(activity.id, activityDismissalKey(activity));
+        replyDrafts.delete(activity.id);
+        clearAnimations();
+        const pairedClose = closeButtonFor(activity.id);
+        if (pairedClose) pairedClose.hidden = true;
+        card.setAttribute('aria-disabled', 'true');
+        card.style.pointerEvents = 'none';
+        const animation = animateElement(
+          card,
+          [
+            { opacity: 1, transform: 'translateY(0) scale(1)' },
+            { opacity: 0, transform: 'translateY(-6px) scale(0.94)' }
+          ],
+          { duration: 180, easing: 'cubic-bezier(0.4, 0, 1, 1)' }
+        );
+        if (!animation) {
+          render();
+          return;
+        }
+        void animation.finished
+          .catch(() => undefined)
+          .then(() => render());
+      }
+
+      function dismissAll() {
+        for (const activity of orderedActivities()) {
+          dismissedActivityKeys.set(
+            activity.id,
+            activityDismissalKey(activity)
+          );
+          replyDrafts.delete(activity.id);
+          actionErrors.delete(activity.id);
+        }
+        render();
+      }
+
+      async function cancelActivity(stop, activity) {
+        const api = widgetConversationsApi();
+        if (!api || typeof api.cancel !== 'function') return;
+        if (stop.disabled) return;
+        actionErrors.delete(activity.id);
+        stop.disabled = true;
+        try {
+          await api.cancel(activity.id);
+        } catch {
+          // cancel 失败保持现状并标记错误态,状态快照会自然对齐
+          actionErrors.add(activity.id);
+          render();
+        } finally {
+          stop.disabled = false;
+        }
+      }
+
+      function createCard(activity, index, display) {
+        const card = document.createElement('div');
+        card.className = 'conversation-card' + (activity.runState === 'running' ? ' is-running' : '');
+        card.dataset.turnId = activity.turnId || '';
+        card.role = 'button';
+        card.tabIndex = 0;
+        card.dataset.conversationId = activity.id;
+        const iconKind = deriveBubbleCardIconKind(activity);
+        card.dataset.iconKind = iconKind;
+        card.hidden = !isBubbleCardVisible(index, display);
+        if (index === 0) card.id = 'conversation-bubble-card';
+
+        const main = document.createElement('span');
+        main.className = 'conversation-card-main';
+        const text = document.createElement('span');
+        text.className = 'conversation-card-text';
+        const title = document.createElement('strong');
+        title.className = 'conversation-card-title';
+        title.textContent = deriveBubbleCardTitle(
+          activity.title,
+          copy().untitledConversation
+        );
+        if (index === 0) title.id = 'conversation-bubble-title';
+        const body = document.createElement('span');
+        body.className = 'conversation-card-body' + (activity.runState === 'running' && iconKind === 'none' ? ' conversation-card-progress' : '');
+        body.textContent = deriveBubbleCardBody(activity, copy());
+        if (index === 0) body.id = 'conversation-bubble-content';
+        text.append(title, body);
+
+        const conversationsApi = widgetConversationsApi();
+        const canReply = Boolean(
+          conversationsApi && typeof conversationsApi.send === 'function'
+        );
+        const canCancel = Boolean(
+          conversationsApi && typeof conversationsApi.cancel === 'function'
+        );
+
+        const reply = document.createElement('button');
+        reply.type = 'button';
+        reply.className = 'conversation-card-reply';
+        reply.innerHTML = ICON_SVGS.reply;
+        reply.setAttribute('aria-label', copy().reply);
+        reply.setAttribute(
+          'aria-expanded',
+          replyOpenForId === activity.id ? 'true' : 'false'
+        );
+        reply.hidden = !canReply;
+        reply.addEventListener('click', (event) => {
+          event.stopPropagation();
+          if (
+            shouldExpandBubbleBeforeAction(
+              currentDisplay(),
+              orderedActivities().length
+            )
+          ) {
+            void setListExpanded(true);
+            return;
+          }
+          if (replyOpenForId === activity.id) {
+            closeReplyBar();
+            return;
+          }
+          openReplyBar(activity, card);
+        });
+
+        const stop = document.createElement('button');
+        stop.type = 'button';
+        stop.className = 'conversation-card-stop';
+        stop.innerHTML = ICON_SVGS.stop;
+        stop.setAttribute('aria-label', copy().stopTask);
+        stop.hidden = !canCancel;
+        stop.addEventListener('click', (event) => {
+          event.stopPropagation();
+          if (
+            shouldExpandBubbleBeforeAction(
+              currentDisplay(),
+              orderedActivities().length
+            )
+          ) {
+            void setListExpanded(true);
+            return;
+          }
+          void cancelActivity(stop, activity);
+        });
+
+        const statusIcon = document.createElement('button');
+        statusIcon.type = 'button';
+        statusIcon.className = 'conversation-card-status-icon';
+        statusIcon.tabIndex = -1;
+        statusIcon.setAttribute('aria-label', activity.runState === 'running' ? title.textContent : closeCardLabel(title.textContent));
+        if (iconKind !== 'none') statusIcon.innerHTML = ICON_SVGS[iconKind];
+        statusIcon.addEventListener('click', (event) => {
+          event.stopPropagation();
+          if (
+            shouldExpandBubbleBeforeAction(
+              currentDisplay(),
+              orderedActivities().length
+            )
+          ) {
+            void setListExpanded(true);
+            return;
+          }
+          if (activity.runState === 'running') {
+            deps.openConversation(activity.id);
+            return;
+          }
+          dismissCard(activity, card);
+        });
+
+        main.append(text, reply, stop, statusIcon);
+
+        const errorEl = document.createElement('p');
+        errorEl.className = 'conversation-card-error';
+        errorEl.setAttribute('role', 'alert');
+        errorEl.textContent = copy().actionFailed;
+        errorEl.hidden = !actionErrors.has(activity.id);
+
+        const replySection = document.createElement('form');
+        replySection.className = 'conversation-card-reply-section';
+        replySection.hidden = true;
+        const replyInput = document.createElement('input');
+        replyInput.className = 'conversation-card-reply-input';
+        replyInput.type = 'text';
+        replyInput.placeholder = copy().quickReplyPlaceholder;
+        replyInput.setAttribute('aria-label', copy().reply);
+        replyInput.autocomplete = 'off';
+        const replySend = document.createElement('button');
+        replySend.type = 'submit';
+        replySend.className = 'conversation-card-reply-send';
+        replySend.innerHTML = ICON_SVGS.send;
+        replySend.setAttribute('aria-label', copy().sendReply);
+        replySection.append(replyInput, replySend);
+        replySection.addEventListener('submit', (event) => {
+          event.preventDefault();
+          if (!replyComposing) void submitReply();
+        });
+        replySection.addEventListener('click', (event) => {
+          event.stopPropagation();
+        });
+        replyInput.addEventListener('input', () => {
+          replyDrafts.set(activity.id, replyInput.value);
+        });
+        // Re-enter typing after another app gained focus. Renders never request it.
+        replyInput.addEventListener('pointerdown', () => deps.onReplyKeyboardFocus?.(true));
+        replyInput.addEventListener('compositionstart', () => {
+          replyComposing = true;
+        });
+        replyInput.addEventListener('compositionend', () => {
+          replyComposing = false;
+        });
+        replyInput.addEventListener('keydown', (event) => {
+          if (
+            event.key === 'Enter' &&
+            (event.isComposing || replyComposing || event.keyCode === 229)
+          ) {
+            event.preventDefault();
+            return;
+          }
+          if (event.key !== 'Escape') return;
+          event.stopPropagation();
+          closeReplyBar();
+        });
+
+        card.append(main, errorEl, replySection);
+        card.setAttribute(
+          'aria-label',
+          [title.textContent, body.textContent].join(
+            deps.isChineseLocale() ? '\uFF0C' : ', '
+          )
+        );
+        card.addEventListener('click', () => {
+          const display = currentDisplay();
+          const next = nextBubbleDisplayOnCardActivate(
+            display,
+            orderedActivities().length
+          );
+          if (next !== display) {
+            void setListExpanded(true);
+            return;
+          }
+          if (activity.runState === 'failed') {
+            dismissCard(activity, card);
+            return;
+          }
+          deps.openConversation(activity.id);
+        });
+        card.addEventListener('keydown', (event) => {
+          if (event.target !== card) return;
+          if (event.key !== 'Enter' && event.key !== ' ') return;
+          event.preventDefault();
+          card.click();
+        });
+        card.addEventListener('pointerenter', () => revealClose(activity.id));
+        card.addEventListener('pointerleave', () =>
+          scheduleHideClose(activity.id)
+        );
+        card.addEventListener('focusin', () => revealClose(activity.id));
+        card.addEventListener('focusout', () =>
+          scheduleHideClose(activity.id)
+        );
+        return card;
+      }
+
+      function settleVisibility() {
+        clearAnimations();
+        const cards = [...list.querySelectorAll('.conversation-card')];
+        const display = currentDisplay();
+        const expanded = display === 'expanded';
+        const layers = expanded
+          ? 0
+          : bubbleStackedLayerCount(orderedActivities().length);
+        bubble.classList.toggle('notification-expanded', expanded);
+        bubble.classList.toggle('notification-collapsed', !expanded);
+        bubble.classList.toggle('has-multiple', layers >= 1);
+        bubble.classList.toggle('has-many', layers >= 2);
+        header.hidden = !expanded;
+        header.style.opacity = '';
+        header.style.transform = '';
+        cards.forEach((card, index) => {
+          card.hidden = !isBubbleCardVisible(index, display);
+          card.style.opacity = '';
+          card.style.transform = '';
+        });
+        syncReplyBarPlacement(false);
+        syncStackLayers();
+      }
+
+      async function setListExpanded(expanded) {
+        if (orderedActivities().length < 2 || listExpanded === expanded) return;
+        clearAnimations();
+        const token = ++transitionToken;
+        const firstCard = list.querySelector('.conversation-card');
+        if (!firstCard) return;
+
+        if (expanded) {
+          const before = firstCard.getBoundingClientRect();
+          listExpanded = true;
+          bubble.classList.add('notification-expanded');
+          bubble.classList.remove(
+            'notification-collapsed',
+            'has-multiple',
+            'has-many'
+          );
+          header.hidden = false;
+          const cards = [...list.querySelectorAll('.conversation-card')];
+          cards.forEach((card) => {
+            card.hidden = false;
+          });
+          const after = firstCard.getBoundingClientRect();
+          animateElement(
+            firstCard,
+            [
+              {
+                transform:
+                  'translateY(' +
+                  String(before.top - after.top) +
+                  'px) scale(0.985)'
+              },
+              { offset: 0.72, transform: 'translateY(-2px) scale(1.004)' },
+              { transform: 'translateY(0) scale(1)' }
+            ],
+            { duration: 460, easing: 'cubic-bezier(0.16, 1, 0.3, 1)' }
+          );
+          animateElement(
+            header,
+            [
+              { opacity: 0, transform: 'translateY(10px) scale(0.96)' },
+              { opacity: 1, transform: 'translateY(0) scale(1)' }
+            ],
+            { duration: 360, easing: 'cubic-bezier(0.16, 1, 0.3, 1)' }
+          );
+          cards.slice(1).forEach((card, index) => {
+            animateElement(
+              card,
+              [
+                {
+                  opacity: 0,
+                  transform:
+                    'translateY(' +
+                    String(-18 - index * 4) +
+                    'px) scale(0.94)'
+                },
+                {
+                  offset: 0.7,
+                  opacity: 1,
+                  transform: 'translateY(2px) scale(1.006)'
+                },
+                { opacity: 1, transform: 'translateY(0) scale(1)' }
+              ],
+              {
+                duration: 420,
+                delay: index * 34,
+                easing: 'cubic-bezier(0.16, 1, 0.3, 1)',
+                fill: 'backwards'
+              }
+            );
+          });
+          updateToggle();
+          updateScrollFade();
+          deps.onDidRender({ wasVisible: true });
+          return;
+        }
+
+        listExpanded = false;
+        const outgoing = [
+          header,
+          ...list.querySelectorAll('.conversation-card:not(:first-child)')
+        ]
+          .map((element, index) =>
+            animateElement(
+              element,
+              [
+                { opacity: 1, transform: 'translateY(0) scale(1)' },
+                { opacity: 0, transform: 'translateY(-12px) scale(0.95)' }
+              ],
+              {
+                duration: 170,
+                delay: index * 12,
+                easing: 'cubic-bezier(0.55, 0, 1, 0.45)'
+              }
+            )
+          )
+          .filter(Boolean);
+        await Promise.all(
+          outgoing.map((animation) => animation.finished.catch(() => undefined))
+        );
+        if (token !== transitionToken) {
+          settleVisibility();
+          updateScrollFade();
+          deps.onDidRender({ wasVisible: true });
+          return;
+        }
+        const before = firstCard.getBoundingClientRect();
+        settleVisibility();
+        const after = firstCard.getBoundingClientRect();
+        animateElement(
+          firstCard,
+          [
+            {
+              transform:
+                'translateY(' +
+                String(before.top - after.top) +
+                'px) scale(0.985)'
+            },
+            { offset: 0.72, transform: 'translateY(2px) scale(1.004)' },
+            { transform: 'translateY(0) scale(1)' }
+          ],
+          { duration: 420, easing: 'cubic-bezier(0.16, 1, 0.3, 1)' }
+        );
+        updateToggle();
+        updateScrollFade();
+        deps.onDidRender({ wasVisible: true });
+      }
+
+      function render() {
+        const progressTimes = new Map();
+        for (const card of list.querySelectorAll('.conversation-card')) {
+          const body = card.querySelector('.conversation-card-progress');
+          const animation = body && typeof body.getAnimations === 'function'
+            ? body.getAnimations().find((item) => item.animationName === 'pet-progress-shimmer')
+            : null;
+          if (animation) progressTimes.set(card.dataset.conversationId, { turn: card.dataset.turnId, time: animation.currentTime });
+        }
+        const wasVisible = stage.classList.contains('bubble-visible');
+        const recent = orderedActivities();
+        transitionToken += 1;
+        clearAnimations();
+        if (recent.length === 0) {
+          listExpanded = false;
+          previousFirstId = null;
+          closeReplyBar();
+          stage.classList.remove('bubble-visible');
+          bubble.classList.remove(
+            'notification-expanded',
+            'notification-collapsed',
+            'has-multiple',
+            'has-many'
+          );
+          header.hidden = true;
+          list.replaceChildren();
+          closeLayer.replaceChildren();
+          updateToggle();
+          deps.onDidRender({ wasVisible });
+          return;
+        }
+        const display = currentDisplay();
+        const expanded = display === 'expanded';
+        const layers = expanded ? 0 : bubbleStackedLayerCount(recent.length);
+        bubble.classList.toggle('notification-expanded', expanded);
+        bubble.classList.toggle('notification-collapsed', !expanded);
+        bubble.classList.toggle('has-multiple', layers >= 1);
+        bubble.classList.toggle('has-many', layers >= 2);
+        header.hidden = !expanded;
+        const openSection = replyOpenForId
+          ? replySectionFor(replyOpenForId)
+          : null;
+        const replyHadFocus = Boolean(
+          openSection &&
+            deps.getActiveElement() ===
+              openSection.querySelector('.conversation-card-reply-input')
+        );
+        const focusedReplyInput = replyHadFocus
+          ? openSection.querySelector('.conversation-card-reply-input')
+          : null;
+        const replySelection = focusedReplyInput
+          ? [focusedReplyInput.selectionStart, focusedReplyInput.selectionEnd, focusedReplyInput.selectionDirection]
+          : null;
+        const cards = recent.map((activity, index) =>
+          createCard(activity, index, display)
+        );
+        list.replaceChildren(...cards);
+        for (const card of cards) {
+          const previous = progressTimes.get(card.dataset.conversationId);
+          const body = card.querySelector('.conversation-card-progress');
+          if (!previous || previous.turn !== card.dataset.turnId || !body || typeof body.getAnimations !== 'function') continue;
+          const animation = body.getAnimations().find((item) => item.animationName === 'pet-progress-shimmer');
+          if (animation && previous.time !== null) animation.currentTime = previous.time;
+        }
+        syncCloseButtons(recent, cards);
+        stage.classList.toggle('bubble-visible', display !== 'count');
+        const firstId = recent[0].id;
+        if (firstId !== previousFirstId) list.scrollTop = 0;
+        previousFirstId = firstId;
+        syncReplyBarPlacement(replyHadFocus);
+        if (replySelection && replyOpenForId) {
+          const input = replySectionFor(replyOpenForId)?.querySelector('.conversation-card-reply-input');
+          if (input && typeof input.setSelectionRange === 'function') {
+            input.setSelectionRange(replySelection[0], replySelection[1], replySelection[2]);
+          }
+        }
+        updateToggle();
+        updateScrollFade();
+        syncStackLayers();
+        deps.onDidRender({ wasVisible });
+      }
+
+      function alignListHeightToCards(maximumHeight) {
+        if (!bubble.classList.contains('notification-expanded')) {
+          return maximumHeight;
+        }
+        const cards = [...list.querySelectorAll('.conversation-card')].filter(
+          (card) => !card.hidden
+        );
+        const referenceCard = cards[0];
+        const cardHeight = referenceCard
+          ? referenceCard.getBoundingClientRect().height
+          : 0;
+        if (!(cardHeight > 0)) return maximumHeight;
+        const gap =
+          cards.length > 1
+            ? Number.parseFloat(getComputedStyle(cards[1]).marginTop) || 0
+            : 0;
+        return alignBubbleListHeight(maximumHeight, cardHeight, gap);
+      }
+
+      function syncVerticalLayout(bottom, belowTop) {
+        const safeBottom = Number.isFinite(bottom) ? Math.max(0, bottom) : 0;
+        const expanded = currentDisplay() === 'expanded';
+        const controlsHeight = expanded ? 32 : 8;
+        // Use content height, independent of the previous viewport constraint.
+        const desiredHeight = Math.min(deps.listMaxHeightPx, Math.max(0, list.scrollHeight - 24));
+        const placement = resolveBubbleVerticalPlacement(
+          innerHeight - safeBottom,
+          Number.isFinite(belowTop) ? belowTop : innerHeight,
+          desiredHeight,
+          innerHeight,
+          deps.screenMarginPx + 10,
+          controlsHeight
+        );
+        bubble.dataset.placement = placement.below ? 'below' : 'above';
+        bubble.style.top = placement.below ? String(placement.anchor) + 'px' : 'auto';
+        bubble.style.bottom = placement.below ? 'auto' : String(innerHeight - placement.anchor) + 'px';
+        const maximumListHeight = Math.min(deps.listMaxHeightPx, placement.maxHeight);
+        const listHeight = alignListHeightToCards(maximumListHeight);
+        list.style.setProperty(
+          '--pet-conversation-list-max-height',
+          String(Math.ceil(listHeight) + 24) + 'px'
+        );
+        syncStackLayers();
+        syncClosePositions();
+      }
+
+      clearAllButton.addEventListener('click', (event) => {
+        event.stopPropagation();
+        dismissAll();
+      });
+      toggle.addEventListener('click', (event) => {
+        event.stopPropagation();
+        const display = currentDisplay();
+        const next = nextBubbleDisplayOnToggle(display);
+        if (next === display || next === 'hidden') return;
+        if (next === 'count') {
+          bubbleVisible = false;
+          listExpanded = false;
+          render();
+          return;
+        }
+        if (display === 'count') {
+          bubbleVisible = true;
+          render();
+          return;
+        }
+        void setListExpanded(false);
+      });
+      list.addEventListener('scroll', updateScrollFade);
+      document.addEventListener('keydown', () => setKeyboardNavigation(true));
+      document.addEventListener('pointerdown', () => setKeyboardNavigation(false), true);
+      document.addEventListener('click', (event) => {
+        if (event.detail > 0) setKeyboardNavigation(false);
+      });
+
+      return {
+        setActivities(next) {
+          for (const activity of next) {
+            const turn = activity.turnId || 'legacy';
+            let notified = notifiedTurns.get(activity.id);
+            if (!notified || notified.turn !== turn) {
+              notified = { turn, kinds: new Set() };
+              notifiedTurns.set(activity.id, notified);
+            }
+            const kind = activity.petState === 'waiting'
+              ? 'waiting'
+              : activity.runState === 'failed'
+                ? 'failed'
+                : activity.runState === 'running' && deriveBubbleCardIconKind(activity) === 'error'
+                  ? 'tool-error:' + activity.latestPart.toolCallId
+                  : activity.runState === 'idle' && activity.unread
+                  ? 'complete'
+                  : null;
+            if (kind && !notified.kinds.has(kind)) {
+              notified.kinds.add(kind);
+              if (dismissedActivityKeys.get(activity.id) !== activityDismissalKey(activity)) {
+                bubbleVisible = true;
+                notificationId = activity.id;
+              }
+            }
+          }
+          const feedIds = new Set(next.map((activity) => activity.id));
+          // 快照里消失的会话清掉对应草稿防泄漏;正在输入的那条保留
+          for (const id of replyDrafts.keys()) {
+            if (!feedIds.has(id) && id !== replyOpenForId) replyDrafts.delete(id);
+          }
+          for (const [id, dismissalKey] of dismissedActivityKeys) {
+            if (
+              !feedIds.has(id) &&
+              dismissalKey.indexOf('legacy\u0000') === 0
+            ) {
+              dismissedActivityKeys.delete(id);
+            }
+          }
+          activities = next;
+        },
+        render,
+        hide() {
+          transitionToken += 1;
+          clearAnimations();
+          bubbleVisible = true;
+          listExpanded = false;
+          previousFirstId = null;
+          closeReplyBar();
+          if (closeHideTimer) {
+            clearTimeout(closeHideTimer);
+            closeHideTimer = 0;
+          }
+          closeRevealId = null;
+          stage.classList.remove('bubble-visible');
+          bubble.classList.remove(
+            'notification-expanded',
+            'notification-collapsed',
+            'has-multiple',
+            'has-many'
+          );
+          header.hidden = true;
+          list.replaceChildren();
+          closeLayer.replaceChildren();
+          updateToggle();
+          deps.onDidRender({ wasVisible: false });
+        },
+        refreshLocale() {
+          clearAllButton.textContent = copy().clearAll;
+          updateToggle();
+          if (orderedActivities().length > 0) render();
+        },
+        visibleCount() {
+          return orderedActivities().length;
+        },
+        anyAwaitingApproval() {
+          return activities.some((activity) => activity.awaitingApproval);
+        },
+        isVisible() {
+          return stage.classList.contains('bubble-visible');
+        },
+        displayState: currentDisplay,
+        syncVerticalLayout
+      };
+    }
+
+    const stage = document.getElementById('stage');
+    const conversationBubble = document.getElementById('conversation-bubble');
+    const conversationCenterHeader = document.getElementById('conversation-center-header');
+    const conversationCenterClearAll = document.getElementById('conversation-center-clear-all');
+    const conversationList = document.getElementById('conversation-list');
+    const conversationCloseLayer = document.getElementById('conversation-close-layer');
+    const conversationStackLayers = document.getElementById('conversation-stack-layers');
+    const conversationBubbleToggle = document.getElementById('conversation-bubble-toggle');
+    const conversationBubbleToggleIcon = document.getElementById('conversation-bubble-toggle-icon');
+    const conversationBubbleToggleCount = document.getElementById('conversation-bubble-toggle-count');
+    const pet = document.getElementById('pet');
+    const threePet = document.getElementById('pet-three');
+    const error = document.getElementById('error');
+    const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
+    let manifest = null;
+    let threePetHandle = null;
+    let threeBaseDragRect = null;
+    let threePointerHit = null;
+    let threeDragging = false;
+    let stateName = 'idle';
+    let preferredStateName = 'idle';
+    let interactionStateActive = false;
+    let frame = 0;
+    let lastFrameAt = performance.now();
+    let pointerIdleTimer = 0;
+    let idleVariantTimer = 0;
+    let pointerInside = false;
+    let animationFrameRequest = 0;
+    let animationWakeTimer = 0;
+    let idleFrameRate = false;
+    let displayScale = 1;
+    let petAnchorXRatio = 0.5;
+    let petAnchorBottomRatio = 1;
+    let visibleBoundsByState = Object.create(null);
+    let activities = [];
+    let currentLocaleTag = 'en-US';
+    let lastErrorKey = null;
+
+    function normalizeLocaleTag(value) {
+      const tag = typeof value === 'string' ? value.trim() : '';
+      return tag || 'en-US';
+    }
+
+    function isChineseLocale(value) {
+      return /^zh(?:-|$)/i.test(normalizeLocaleTag(value));
+    }
+
+    function currentCopy() {
+      return UI_COPY[resolveCopyLocale(currentLocaleTag, UI_COPY_LOCALES)] || UI_COPY['en-US'];
+    }
+
+    function formatCopy(template, replacements) {
+      return String(template).replace(/{([A-Za-z]+)}/g, (match, key) =>
+        Object.prototype.hasOwnProperty.call(replacements, key)
+          ? String(replacements[key])
+          : match
+      );
+    }
+
+    function callingToolLabel(toolName) {
+      if (!toolName) return currentCopy().callingTool;
+      return formatCopy(currentCopy().callingToolNamed, { toolName });
+    }
+
+    function applyHostLocale(value) {
+      currentLocaleTag = normalizeLocaleTag(value);
+      const copy = currentCopy();
+      document.documentElement.lang = currentLocaleTag;
+      stage.setAttribute('aria-label', copy.petAria);
+      conversationBubble.setAttribute('aria-label', copy.recentTasksAria);
+      const petName =
+        manifest && typeof manifest.name === 'string' && manifest.name.trim()
+          ? manifest.name
+          : copy.petAria;
+      pet.setAttribute('aria-label', petName);
+      threePet.setAttribute('aria-label', petName);
+      if (lastErrorKey) error.textContent = copy[lastErrorKey] || lastErrorKey;
+      bubbleController.refreshLocale();
+    }
+
+    function showError(messageKey) {
+      lastErrorKey = messageKey;
+      pet.style.display = 'none';
+      threePet.style.display = 'none';
+      error.textContent = currentCopy()[messageKey] || messageKey;
+      error.style.display = 'grid';
+    }
+
+    function applyBubbleTheme(value) {
+      if (
+        !value ||
+        typeof value.background !== 'string' ||
+        typeof value.foreground !== 'string' ||
+        typeof value.border !== 'string' ||
+        !/^#[0-9A-Fa-f]{6}$/.test(value.background) ||
+        !/^#[0-9A-Fa-f]{6}$/.test(value.foreground) ||
+        !/^#[0-9A-Fa-f]{6}$/.test(value.border)
+      ) {
+        return false;
+      }
+      const background = value.background.toUpperCase();
+      document.documentElement.style.setProperty(
+        '--pet-bubble-background',
+        background
+      );
+      document.documentElement.style.setProperty(
+        '--pet-bubble-foreground',
+        value.foreground.toUpperCase()
+      );
+      document.documentElement.style.setProperty(
+        '--pet-bubble-border',
+        value.border.toUpperCase()
+      );
+      return true;
+    }
+
+    function isThreeManifest(value) {
+      return Boolean(value && value.renderer === 'three' && value.three);
+    }
+
+    function handleThreePointerMove(event) {
+      if (!isThreeManifest(manifest)) return;
+      if (!threePetHandle || typeof threePetHandle.setCursor !== 'function') return;
+      const rect = threePet.getBoundingClientRect();
+      const inside =
+        rect.width > 0 &&
+        rect.height > 0 &&
+        Number.isFinite(event.clientX) &&
+        Number.isFinite(event.clientY) &&
+        event.clientX >= rect.left &&
+        event.clientX < rect.right &&
+        event.clientY >= rect.top &&
+        event.clientY < rect.bottom;
+      try {
+        threePetHandle.setCursor(event.clientX, event.clientY, inside, event.screenX);
+      } catch {
+        // A Three bundle cursor error must not break the Pet runtime.
+      }
+    }
+
+    function currentPetAnchor() {
+      const size = hostDisplaySize ?? Math.max(1, Math.round(BASE_DISPLAY_SIZE_PX * displayScale));
+      // 盒透明边(盒半径 − 可见球半径)允许伸出窗口底:
+      // 拖到屏幕底边时可见球边缘能贴到窗口/屏幕边缘,而不是盒边缘贴边就停
+      const bottomOverhang = Math.round(size * (0.5 - THREE_PET_BALL_RADIUS_FRACTION));
+      return {
+        x: Math.min(innerWidth, Math.max(0, petAnchorXRatio * innerWidth)),
+        bottom: Math.min(innerHeight + bottomOverhang, Math.max(0, petAnchorBottomRatio * innerHeight))
+      };
+    }
+
+    function syncPetAnchorLayout() {
+      const anchor = currentPetAnchor();
+      const bottomOffset = innerHeight - anchor.bottom;
+      pet.style.left = String(anchor.x) + 'px';
+      pet.style.bottom = String(bottomOffset) + 'px';
+      threePet.style.left = String(anchor.x) + 'px';
+      threePet.style.bottom = String(bottomOffset) + 'px';
+      const bubbleCenter = resolveBubbleHorizontalCenter(
+        anchor.x,
+        conversationBubble.offsetWidth,
+        innerWidth,
+        BUBBLE_SCREEN_MARGIN_PX
+      );
+      conversationBubble.style.left = String(bubbleCenter) + 'px';
+      conversationStackLayers.style.left = String(bubbleCenter) + 'px';
+      return anchor;
+    }
+
+    function reportInteractiveRegion(dragRect) {
+      if (PET_PREVIEW) return;
+      const hitRegions = isThreeManifest(manifest) ? [] : [dragRect];
+      if (stage.classList.contains('bubble-visible')) {
+        const bubbleRect = conversationBubble.getBoundingClientRect();
+        if (bubbleRect.width > 0 && bubbleRect.height > 0) {
+          hitRegions.push({
+            x: Math.round(bubbleRect.left),
+            y: Math.round(bubbleRect.top),
+            width: Math.round(bubbleRect.width),
+            height: Math.round(bubbleRect.height)
+          });
+        }
+        if (!conversationCenterHeader.hidden) {
+          const clearAllRect = conversationCenterClearAll.getBoundingClientRect();
+          if (clearAllRect.width > 0 && clearAllRect.height > 0) {
+            hitRegions.push({
+              x: Math.round(clearAllRect.left),
+              y: Math.round(clearAllRect.top),
+              width: Math.round(clearAllRect.width),
+              height: Math.round(clearAllRect.height)
+            });
+          }
+        }
+        for (const closeButton of conversationBubble.querySelectorAll('.conversation-bubble-close:not([hidden])')) {
+          const closeRect = closeButton.getBoundingClientRect();
+          if (closeRect.width > 0 && closeRect.height > 0) {
+            hitRegions.push({
+              x: Math.round(closeRect.left),
+              y: Math.round(closeRect.top),
+              width: Math.round(closeRect.width),
+              height: Math.round(closeRect.height)
+            });
+          }
+        }
+      }
+      if (bubbleController.visibleCount() > 0) {
+        const toggleRect = conversationBubbleToggle.getBoundingClientRect();
+        if (toggleRect.width > 0 && toggleRect.height > 0) {
+          hitRegions.push({
+            x: Math.round(toggleRect.left),
+            y: Math.round(toggleRect.top),
+            width: Math.round(toggleRect.width),
+            height: Math.round(toggleRect.height)
+          });
+        }
+      }
+      parent.postMessage({
+        type: 'daimon-pet:interactive-region',
+        dragRect,
+        hitRegions
+      }, '*');
+    }
+
+    // 零矩形 = 整窗穿透(host 侧把显式零矩形解释为清空交互区)
+    const THREE_EMPTY_DRAG_RECT = Object.freeze({ x: 0, y: 0, width: 0, height: 0 });
+
+    // Bounds follow the rendered core, including dock deformation, without its mist.
+    function acceptThreeBodyBounds(bounds) {
+      if (!bounds || ![bounds.x, bounds.y, bounds.width, bounds.height].every(Number.isFinite)) return;
+      const previous = threeBaseDragRect;
+      threeBaseDragRect = bounds;
+      if (threePointerHit === true && (!previous ||
+          ['x', 'y', 'width', 'height'].some((key) => previous[key] !== bounds[key]))) {
+        reportInteractiveRegion(bounds);
+      }
+    }
+
+    function measureThreeDragRect() {
+      if (threePetHandle && typeof threePetHandle.getBodyBounds === 'function') {
+        const bounds = threePetHandle.getBodyBounds();
+        if (bounds) threeBaseDragRect = bounds;
+      }
+      return threeBaseDragRect || THREE_EMPTY_DRAG_RECT;
+    }
+
+    function reportThreeHitRegion(hit) {
+      if (hit === threePointerHit) return;
+      threePointerHit = hit;
+      // 光标跟随真实命中:命中球体=pointing hand,未命中=系统默认(canvas 矩形
+      // 的透明像素区不再误显示手型)
+      threePet.style.cursor = hit ? 'url("data:image/svg+xml,%3Csvg width%3D%2229%22 height%3D%2230%22 viewBox%3D%220 0 29 30%22 fill%3D%22none%22 xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%3E%0A%3Cg filter%3D%22url(%23filter0_d_9286_12946)%22%3E%0A%3Cpath fill-rule%3D%22evenodd%22 clip-rule%3D%22evenodd%22 d%3D%22M9.64784 20.0061C9.09698 19.5962 8.31215 18.6667 7.07662 17.6141C6.37674 17.019 4.75792 15.979 4.19843 15.3804C3.70995 14.8498 3.67057 14.5637 3.61031 14.0317C3.5027 13.0853 4.24594 12.1268 5.26695 11.9557C6.03795 11.8252 6.80862 12.1513 7.50817 12.467C7.93016 12.6568 8.50327 13.0918 8.8428 13.3331C9.15506 13.5538 9.24447 13.6556 9.58664 13.9242C10.0391 14.2797 10.2024 14.472 9.94368 14.0165C9.64825 13.3254 9.15135 12.1432 8.61715 11.1232C8.21118 10.3499 8.13171 10.233 7.78568 9.64867C7.41863 9.02646 7.19683 8.5812 6.83051 7.91532C6.5737 7.44372 6.07889 6.47218 5.86419 5.90854C5.56924 5.13813 5.17948 3.85737 5.52886 3.12706C5.80268 2.5552 6.67928 2.16969 7.32266 2.30477C8.16504 2.48126 8.87551 3.44626 9.18352 3.82494C9.73712 4.50586 10.1911 5.34237 10.6925 6.46589C11.3303 7.89602 12.3235 9.85214 12.4548 10.2844C12.3463 9.74041 11.9114 8.65034 11.8667 8.11259C11.8261 7.62498 12.0725 6.97972 12.523 6.70216C12.9044 6.46797 13.3777 6.293 13.8288 6.26686C14.3072 6.23807 14.8723 6.43451 15.1324 6.69247C15.8991 7.45604 16.4043 9.30065 16.3996 9.1963C16.3782 8.61813 16.0253 7.38806 16.1961 6.79101C16.3081 6.39762 16.7435 5.9533 17.0056 5.83028C17.4114 5.6408 17.9282 5.47746 18.3992 5.44443C18.779 5.41876 19.3822 5.7168 19.5692 5.88721C20.0186 6.301 20.576 7.66262 20.762 8.14233C20.8384 8.3408 20.717 7.54564 20.9008 6.9622C21.2409 5.87874 23.2748 5.14119 23.8988 7.15118C24.1889 8.08905 24.1701 8.04752 24.3409 8.68503C24.5416 9.43411 24.6449 9.88937 24.7496 10.4421C24.8599 11.0337 25.0863 12.3769 25.0752 13.06C25.0675 13.5295 24.9174 14.6211 24.6679 15.3184C24.6679 15.3184 23.597 17.5465 23.6461 18.4076C23.6933 19.2677 23.7514 19.2584 23.873 19.8454C23.9941 20.431 24.4062 21.1343 24.4062 21.1343C24.4062 21.1343 23.2846 21.5964 22.6319 21.6641C22.0409 21.7246 21.0376 20.7853 20.7641 20.489C20.3875 20.0805 19.8803 20.3143 19.767 20.7204C19.5897 21.3627 19.1552 22.546 18.6763 22.7411C17.7411 23.1221 15.7124 23.5834 14.136 23.9887C14.136 23.9887 14.0116 22.452 13.2799 22.1092C12.7375 21.8524 11.773 21.2955 11.2109 21.0175L9.64784 20.0061Z%22 fill%3D%22white%22%2F%3E%0A%3C%2Fg%3E%0A%3Cpath fill-rule%3D%22evenodd%22 clip-rule%3D%22evenodd%22 d%3D%22M9.64784 20.0061C9.09698 19.5962 8.31215 18.6667 7.07662 17.6141C6.37674 17.019 4.75792 15.979 4.19843 15.3804C3.70995 14.8498 3.67057 14.5637 3.61031 14.0317C3.5027 13.0853 4.24594 12.1268 5.26695 11.9557C6.03795 11.8252 6.80862 12.1513 7.50817 12.467C7.93016 12.6568 8.50327 13.0918 8.8428 13.3331C9.15506 13.5538 9.24447 13.6556 9.58664 13.9242C10.0391 14.2797 10.2024 14.472 9.94368 14.0165C9.64825 13.3254 9.15135 12.1432 8.61715 11.1232C8.21118 10.3499 8.13171 10.233 7.78568 9.64867C7.41863 9.02647 7.19683 8.5812 6.83051 7.91532C6.5737 7.44372 6.07889 6.47218 5.86419 5.90854C5.56924 5.13813 5.17948 3.85737 5.52886 3.12706C5.80268 2.5552 6.67928 2.16969 7.32266 2.30477C8.16504 2.48126 8.87551 3.44626 9.18352 3.82494C9.73712 4.50586 10.1911 5.34237 10.6925 6.46589C11.3303 7.89602 12.3235 9.85214 12.4548 10.2844C12.3463 9.74041 11.9114 8.65034 11.8667 8.11259C11.8261 7.62498 12.0725 6.97972 12.523 6.70216C12.9044 6.46797 13.3777 6.293 13.8288 6.26686C14.3072 6.23807 14.8723 6.43451 15.1324 6.69247C15.8991 7.45604 16.4043 9.30065 16.3996 9.1963C16.3782 8.61813 16.0253 7.38806 16.1961 6.79101C16.3081 6.39762 16.7435 5.9533 17.0056 5.83028C17.4114 5.6408 17.9282 5.47746 18.3992 5.44443C18.779 5.41876 19.3822 5.7168 19.5692 5.88721C20.0186 6.301 20.576 7.66262 20.762 8.14233C20.8384 8.3408 20.717 7.54564 20.9008 6.9622C21.2409 5.87874 23.2748 5.14119 23.8988 7.15118C24.1889 8.08905 24.1701 8.04752 24.3409 8.68503C24.5416 9.43411 24.6449 9.88937 24.7496 10.4421C24.8599 11.0337 25.0863 12.3769 25.0752 13.06C25.0675 13.5295 24.9174 14.6211 24.6679 15.3184C24.6679 15.3184 23.597 17.5465 23.6461 18.4076C23.6933 19.2677 23.7514 19.2584 23.873 19.8454C23.9941 20.431 24.4062 21.1343 24.4062 21.1343C24.4062 21.1343 23.2846 21.5964 22.6319 21.6641C22.0409 21.7246 21.0376 20.7853 20.7641 20.489C20.3875 20.0805 19.8803 20.3143 19.767 20.7204C19.5897 21.3627 19.1552 22.546 18.6763 22.7411C17.7411 23.1221 15.7123 23.5834 14.136 23.9887C14.136 23.9887 14.0116 22.4521 13.2799 22.1092C12.7375 21.8524 11.773 21.2955 11.2109 21.0175L9.64784 20.0061Z%22 stroke%3D%22black%22 stroke-width%3D%221.125%22 stroke-linecap%3D%22round%22 stroke-linejoin%3D%22round%22%2F%3E%0A%3Cpath d%3D%22M21.7169 17.3227L20.374 12.311%22 stroke%3D%22black%22 stroke-width%3D%221.125%22 stroke-linecap%3D%22round%22%2F%3E%0A%3Cpath d%3D%22M18.8011 18.1222L17.4296 13.0964%22 stroke%3D%22black%22 stroke-width%3D%221.125%22 stroke-linecap%3D%22round%22%2F%3E%0A%3Cpath d%3D%22M14.5729 13.9109L15.9334 18.8666%22 stroke%3D%22black%22 stroke-width%3D%221.125%22 stroke-linecap%3D%22round%22%2F%3E%0A%3Cdefs%3E%0A%3Cfilter id%3D%22filter0_d_9286_12946%22 x%3D%22-2.43187e-05%22 y%3D%220.677588%22 width%3D%2228.6757%22 height%3D%2228.9112%22 filterUnits%3D%22userSpaceOnUse%22 color-interpolation-filters%3D%22sRGB%22%3E%0A%3CfeFlood flood-opacity%3D%220%22 result%3D%22BackgroundImageFix%22%2F%3E%0A%3CfeColorMatrix in%3D%22SourceAlpha%22 type%3D%22matrix%22 values%3D%220 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0%22 result%3D%22hardAlpha%22%2F%3E%0A%3CfeOffset dy%3D%222%22%2F%3E%0A%3CfeGaussianBlur stdDeviation%3D%221.8%22%2F%3E%0A%3CfeComposite in2%3D%22hardAlpha%22 operator%3D%22out%22%2F%3E%0A%3CfeColorMatrix type%3D%22matrix%22 values%3D%220 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.65 0%22%2F%3E%0A%3CfeBlend mode%3D%22normal%22 in2%3D%22BackgroundImageFix%22 result%3D%22effect1_dropShadow_9286_12946%22%2F%3E%0A%3CfeBlend mode%3D%22normal%22 in%3D%22SourceGraphic%22 in2%3D%22effect1_dropShadow_9286_12946%22 result%3D%22shape%22%2F%3E%0A%3C%2Ffilter%3E%0A%3C%2Fdefs%3E%0A%3C%2Fsvg%3E") 6 2, pointer' : '';
+      reportInteractiveRegion(hit ? measureThreeDragRect() : THREE_EMPTY_DRAG_RECT);
+    }
+
+    function currentThreeDragRect() {
+      return threePointerHit === false ? THREE_EMPTY_DRAG_RECT : measureThreeDragRect();
+    }
+
+    function resize() {
+      if (!manifest) return;
+      const anchor = syncPetAnchorLayout();
+      if (isThreeManifest(manifest)) {
+        const size = hostDisplaySize ?? Math.max(1, Math.round(BASE_DISPLAY_SIZE_PX * displayScale));
+        threePet.style.width = String(size) + 'px';
+        threePet.style.height = String(size) + 'px';
+        // 气泡底部对齐球体可见上沿(kimi 球在画布居中、半径约 1/8 画布宽)
+        bubbleController.syncVerticalLayout(
+          innerHeight - anchor.bottom +
+            Math.round(size * THREE_PET_BALL_TOP_FRACTION) +
+            THREE_PET_BUBBLE_GAP_PX,
+          anchor.bottom - size * (THREE_PET_BALL_CENTER_FRACTION - THREE_PET_BALL_RADIUS_FRACTION) + THREE_PET_BUBBLE_GAP_PX
+        );
+        if (threePetHandle && typeof threePetHandle.resize === 'function') {
+          threePetHandle.resize();
+        }
+        if (bubbleController.visibleCount() > 0) {
+          // 折叠钮:球右侧、圆心在球的上 1/3 处、与其他图标容器同款的 30px 正圆
+          const toggleSize = THREE_PET_TOGGLE_SIZE_PX;
+          conversationBubbleToggle.style.setProperty(
+            '--pet-bubble-toggle-size',
+            String(toggleSize) + 'px'
+          );
+          const toggleCenterY =
+            anchor.bottom -
+            size * (1 - THREE_PET_BALL_CENTER_FRACTION) -
+            size * THREE_PET_TOGGLE_RISE_FRACTION;
+          const ballRight = anchor.x + size * THREE_PET_BALL_RADIUS_FRACTION;
+          conversationBubbleToggle.style.left =
+            String(Math.round(resolveBubbleToggleLeft(
+              anchor.x - size * THREE_PET_BALL_RADIUS_FRACTION,
+              ballRight, toggleSize, innerWidth, THREE_PET_TOGGLE_GAP_PX, 6
+            ))) + 'px';
+          conversationBubbleToggle.style.top =
+            String(Math.round(Math.min(
+              innerHeight - toggleSize - 6,
+              Math.max(6, toggleCenterY - toggleSize / 2)
+            ))) + 'px';
+        }
+        measureThreeDragRect();
+        reportInteractiveRegion(currentThreeDragRect());
+        return;
+      }
+      const atlas = manifest.atlas;
+      const baseScale = Math.min(
+        SPRITESHEET_BASE_DISPLAY_SIZE_PX / atlas.frameWidth,
+        SPRITESHEET_BASE_DISPLAY_SIZE_PX / atlas.frameHeight
+      );
+      const scale = Math.max(0.05, baseScale * displayScale);
+      const bounds = visibleBoundsByState[stateName] || {
+        left: 0,
+        top: 0,
+        right: atlas.frameWidth,
+        bottom: atlas.frameHeight
+      };
+      const visiblePetTopFromBottom = (atlas.frameHeight - bounds.top) * scale;
+      bubbleController.syncVerticalLayout(
+        innerHeight - anchor.bottom + visiblePetTopFromBottom + BUBBLE_GAP_PX,
+        anchor.bottom - (atlas.frameHeight - bounds.bottom) * scale + BUBBLE_GAP_PX
+      );
+      pet.style.transform = 'translateX(-50%) scale(' + String(scale) + ')';
+      const frameLeft = anchor.x - atlas.frameWidth * scale / 2;
+      const frameTop = anchor.bottom - atlas.frameHeight * scale;
+      const left = Math.floor(frameLeft + bounds.left * scale);
+      const top = Math.floor(frameTop + bounds.top * scale);
+      const right = Math.ceil(frameLeft + bounds.right * scale);
+      const bottom = Math.ceil(frameTop + bounds.bottom * scale);
+      if (bubbleController.visibleCount() > 0) {
+        const toggleWidth = Math.max(22, conversationBubbleToggle.offsetWidth);
+        const toggleHeight = Math.max(22, conversationBubbleToggle.offsetHeight);
+        conversationBubbleToggle.style.left =
+          String(resolveBubbleToggleLeft(left, right, toggleWidth, innerWidth, 8, 6)) + 'px';
+        conversationBubbleToggle.style.top =
+          String(Math.min(
+            innerHeight - toggleHeight - 6,
+            Math.max(6, bottom - toggleHeight + 2 - BUBBLE_TOGGLE_NUDGE_PX)
+          )) + 'px';
+      }
+      const dragRect = {
+        x: left,
+        y: top,
+        width: Math.max(1, right - left),
+        height: Math.max(1, bottom - top)
+      };
+      reportInteractiveRegion(dragRect);
+    }
+
+    function measureVisibleSpriteBounds(image) {
+      if (!manifest) return Object.create(null);
+      const atlas = manifest.atlas;
+      const framePixels = atlas.frameWidth * atlas.frameHeight;
+      if (framePixels <= 0 || framePixels > MAX_VISIBLE_BOUNDS_SCAN_PIXELS) {
+        return Object.create(null);
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = atlas.frameWidth;
+      canvas.height = atlas.frameHeight;
+      const context = canvas.getContext('2d', { willReadFrequently: true });
+      if (!context) return Object.create(null);
+      const measured = Object.create(null);
+      let remainingScanPixels = MAX_VISIBLE_BOUNDS_SCAN_PIXELS;
+      try {
+        for (const [name, state] of Object.entries(manifest.states)) {
+          const stateScanPixels = state.frames * framePixels;
+          if (stateScanPixels > remainingScanPixels) continue;
+          remainingScanPixels -= stateScanPixels;
+          let opaqueLeft = atlas.frameWidth;
+          let opaqueTop = atlas.frameHeight;
+          let opaqueRight = -1;
+          let opaqueBottom = -1;
+          for (let frameIndex = 0; frameIndex < state.frames; frameIndex += 1) {
+            context.clearRect(0, 0, atlas.frameWidth, atlas.frameHeight);
+            context.drawImage(
+              image,
+              frameIndex * atlas.frameWidth,
+              state.row * atlas.frameHeight,
+              atlas.frameWidth,
+              atlas.frameHeight,
+              0,
+              0,
+              atlas.frameWidth,
+              atlas.frameHeight
+            );
+            const pixels = context.getImageData(0, 0, atlas.frameWidth, atlas.frameHeight).data;
+            for (let y = 0; y < atlas.frameHeight; y += 1) {
+              const rowStart = y * atlas.frameWidth * 4;
+              for (let x = 0; x < atlas.frameWidth; x += 1) {
+                if (pixels[rowStart + x * 4 + 3] > SPRITE_ALPHA_THRESHOLD) {
+                  opaqueLeft = Math.min(opaqueLeft, x);
+                  opaqueTop = Math.min(opaqueTop, y);
+                  opaqueRight = Math.max(opaqueRight, x + 1);
+                  opaqueBottom = Math.max(opaqueBottom, y + 1);
+                }
+              }
+            }
+          }
+          if (opaqueRight > opaqueLeft && opaqueBottom > opaqueTop) {
+            measured[name] = {
+              left: opaqueLeft,
+              top: opaqueTop,
+              right: opaqueRight,
+              bottom: opaqueBottom
+            };
+          }
+        }
+      } catch {
+        return Object.create(null);
+      }
+      return measured;
+    }
+
+    function measureSpritesheetWhenReady() {
+      const image = new Image();
+      image.crossOrigin = 'anonymous';
+      image.addEventListener('load', () => {
+        visibleBoundsByState = measureVisibleSpriteBounds(image);
+        resize();
+      }, { once: true });
+      image.src = '/workspace/' + encodeURIComponent(manifest.spritesheet);
+    }
+
+    function hideConversationBubble() {
+      bubbleController.hide();
+    }
+
+    function handleBubbleDidRender() {
+      // 气泡弹出/更新时唤醒渲染循环到 60fps 活跃窗:
+      // 深度空闲档(4fps)下首帧动画和 resize 后的补帧不会被帧率封顶拖住
+      if (threePetHandle && typeof threePetHandle.noteActivity === 'function') {
+        threePetHandle.noteActivity();
+      }
+      resize();
+    }
+
+    conversationBubble.addEventListener('transitionend', (event) => {
+      if (event.target === conversationBubble) resize();
+    });
+
+    function normalizeConversationStatus(value) {
+      if (!value || !Array.isArray(value.conversations)) {
+        return { activities: [], activeId: null };
+      }
+      return {
+        activities: value.conversations
+          .filter(shouldIncludeConversationActivity)
+          .map((conversation) => ({
+            id: conversation.id,
+            turnId:
+              typeof conversation.turnId === 'string' && conversation.turnId.trim()
+                ? conversation.turnId
+                : undefined,
+            title: conversation.title,
+            text: conversationStatusPartText(conversation.latestPart),
+            progressText: conversationStatusProgressText(conversation.latestPart),
+            runState: conversation.runState,
+            latestPart: conversation.latestPart,
+            unread: conversation.unread === true,
+            hasError: conversation.runState === 'failed',
+            petState: conversationPetState(conversation),
+            awaitingApproval: conversationAwaitingApproval(conversation)
+          })),
+        activeId: typeof value.activeConversationId === 'string'
+          ? value.activeConversationId
+          : null
+      };
+    }
+
+    function conversationStatusPartText(part) {
+      if (!part || typeof part !== 'object') return '';
+      if (part.kind === 'interaction') {
+        return part.interactionKind === 'question'
+          ? currentCopy().chooseOption
+          : currentCopy().confirmationBody;
+      }
+      if (part.kind === 'tool-result') return typeof part.summary === 'string' ? part.summary : '';
+      if (part.kind === 'text') {
+        return typeof part.text === 'string' ? part.text : '';
+      }
+      return '';
+    }
+
+    function conversationStatusProgressText(part) {
+      if (!part || typeof part !== 'object' || part.kind !== 'tool-call') return '';
+      const toolName =
+        typeof part.toolName === 'string' && part.toolName.trim()
+          ? part.toolName.trim()
+          : '';
+      return callingToolLabel(toolName);
+    }
+
+    function conversationAwaitingApproval(conversation) {
+      const part = conversation.latestPart;
+      return Boolean(
+        conversation.runState === 'running' &&
+        part &&
+        part.kind === 'interaction' &&
+        part.interactionKind === 'tool-approval'
+      );
+    }
+
+    function preferredActivityState() {
+      const priority = ['waiting', 'working'];
+      for (const state of priority) {
+        if (activities.some((activity) => activity.petState === state)) return state;
+      }
+      return 'idle';
+    }
+
+    function handleConversationStatus(status) {
+      const feed = normalizeConversationStatus(status);
+      activities = feed.activities;
+      bubbleController.setActivities(feed.activities);
+      if (feed.activities.length === 0) {
+        hideConversationBubble();
+        setPreferredState('idle');
+        return;
+      }
+      bubbleController.render();
+      setPreferredState(preferredActivityState());
+    }
+
+    function openConversation(conversationId) {
+      if (
+        !conversationsApi ||
+        typeof conversationsApi.open !== 'function'
+      ) {
+        return;
+      }
+      conversationsApi.open(conversationId);
+    }
+
+    function render() {
+      if (!manifest || isThreeManifest(manifest)) return;
+      const atlas = manifest.atlas;
+      const state = manifest.states[stateName] || manifest.states.idle;
+      const safeFrame = reducedMotion.matches ? 0 : frame % state.frames;
+      pet.style.backgroundPosition =
+        String(-safeFrame * atlas.frameWidth) + 'px ' + String(-state.row * atlas.frameHeight) + 'px';
+    }
+
+    function resolveStateName(nextState) {
+      if (!manifest || typeof nextState !== 'string') return 'idle';
+      if (isThreeManifest(manifest)) {
+        return THREE_PET_STATES.includes(nextState) ? nextState : 'idle';
+      }
+      if (manifest.states[nextState]) return nextState;
+      const legacyAliases = {
+        running_left: 'dragLeft',
+        running_right: 'dragRight',
+        working: 'idle',
+        failed: 'idle',
+        waiting: 'idle',
+        idle_random_1: 'idle',
+        idle_random_2: 'idle'
+      };
+      const legacyState = legacyAliases[nextState];
+      return legacyState && manifest.states[legacyState] ? legacyState : 'idle';
+    }
+
+    function usesPointerIdleFrameInterval() {
+      return (
+        idleFrameRate &&
+        stateName !== 'idle_random_1' &&
+        stateName !== 'idle_random_2'
+      );
+    }
+
+    function setState(nextState) {
+      if (!manifest) return;
+      const resolvedState = resolveStateName(nextState);
+      if (stateName === resolvedState) return;
+      const usedPointerIdleFrameInterval = usesPointerIdleFrameInterval();
+      stateName = resolvedState;
+      frame = 0;
+      lastFrameAt = performance.now();
+      resize();
+      render();
+      if (threePetHandle && typeof threePetHandle.setState === 'function') {
+        try {
+          threePetHandle.setState(resolvedState);
+        } catch {
+          // A Three bundle state error must not break the Pet runtime.
+        }
+      }
+      if (usedPointerIdleFrameInterval !== usesPointerIdleFrameInterval()) {
+        restartAnimationSchedule();
+      }
+    }
+
+    function setPreferredState(nextState) {
+      preferredStateName =
+        nextState === 'working' ||
+        nextState === 'waiting'
+          ? nextState
+          : 'idle';
+      clearIdleVariantTimer();
+      if (!interactionStateActive) setState(preferredStateName);
+      scheduleIdleVariant();
+    }
+
+    function handleHostState(nextState) {
+      if (!manifest || typeof nextState !== 'string') return;
+      if (nextState === 'running_left' || nextState === 'running_right') {
+        clearIdleVariantTimer();
+        // 只在拖动方向变化时传递一次,100ms 重复 host 消息不再触发重复弹跳
+        if (stateName !== nextState) {
+          interactionStateActive = true;
+          setState(nextState);
+        }
+        return;
+      }
+      interactionStateActive = false;
+      setState(preferredStateName);
+      scheduleIdleVariant();
+    }
+
+    function clearPointerIdleTimer() {
+      if (!pointerIdleTimer) return;
+      clearTimeout(pointerIdleTimer);
+      pointerIdleTimer = 0;
+    }
+
+    function clearIdleVariantTimer() {
+      if (!idleVariantTimer) return;
+      clearTimeout(idleVariantTimer);
+      idleVariantTimer = 0;
+    }
+
+    function availableIdleVariants() {
+      if (!manifest || isThreeManifest(manifest)) return [];
+      return ['idle_random_1', 'idle_random_2']
+        .filter((name) => Boolean(manifest.states[name]));
+    }
+
+    function scheduleIdleVariant() {
+      clearIdleVariantTimer();
+      if (
+        !manifest ||
+        isThreeManifest(manifest) ||
+        reducedMotion.matches ||
+        interactionStateActive ||
+        preferredStateName !== 'idle' ||
+        stateName !== 'idle'
+      ) {
+        return;
+      }
+      const variants = availableIdleVariants();
+      if (variants.length === 0) return;
+      const delayRange = IDLE_VARIANT_MAX_DELAY_MS - IDLE_VARIANT_MIN_DELAY_MS;
+      const delay = IDLE_VARIANT_MIN_DELAY_MS + Math.floor(Math.random() * (delayRange + 1));
+      idleVariantTimer = setTimeout(() => {
+        idleVariantTimer = 0;
+        if (
+          interactionStateActive ||
+          preferredStateName !== 'idle' ||
+          stateName !== 'idle'
+        ) {
+          return;
+        }
+        const currentVariants = availableIdleVariants();
+        if (currentVariants.length === 0) return;
+        const index = Math.floor(Math.random() * currentVariants.length);
+        setState(currentVariants[index] || currentVariants[0]);
+      }, delay);
+    }
+
+    function clearAnimationSchedule() {
+      if (animationFrameRequest) {
+        cancelAnimationFrame(animationFrameRequest);
+        animationFrameRequest = 0;
+      }
+      if (animationWakeTimer) {
+        clearTimeout(animationWakeTimer);
+        animationWakeTimer = 0;
+      }
+    }
+
+    function scheduleAnimationTick() {
+      if (
+        !manifest ||
+        reducedMotion.matches ||
+        animationFrameRequest ||
+        animationWakeTimer
+      ) {
+        return;
+      }
+      if (!usesPointerIdleFrameInterval()) {
+        animationFrameRequest = requestAnimationFrame(tick);
+        return;
+      }
+      const remaining = Math.max(
+        0,
+        IDLE_FRAME_INTERVAL_MS - (performance.now() - lastFrameAt)
+      );
+      animationWakeTimer = setTimeout(() => {
+        animationWakeTimer = 0;
+        animationFrameRequest = requestAnimationFrame(tick);
+      }, remaining);
+    }
+
+    function restartAnimationSchedule() {
+      clearAnimationSchedule();
+      scheduleAnimationTick();
+    }
+
+    function setIdleFrameRate(enabled) {
+      if (idleFrameRate === enabled) return;
+      idleFrameRate = enabled;
+      lastFrameAt = performance.now();
+      restartAnimationSchedule();
+    }
+
+    function handlePointerPresence(inside) {
+      pointerInside = inside;
+      clearPointerIdleTimer();
+      if (inside) {
+        setIdleFrameRate(false);
+        return;
+      }
+      if (idleFrameRate) return;
+      pointerIdleTimer = setTimeout(() => {
+        pointerIdleTimer = 0;
+        setIdleFrameRate(true);
+      }, POINTER_IDLE_DELAY_MS);
+    }
+
+    function handleHostClick(data) {
+      if (performance.now() < suppressBodyClickUntil) return;
+      const values = [
+        data.button,
+        data.clientX,
+        data.clientY,
+        data.normalizedX,
+        data.normalizedY
+      ];
+      if (!values.every((value) => typeof value === 'number' && Number.isFinite(value))) {
+        return;
+      }
+      if (isThreeManifest(manifest)) {
+        if (!threePetHandle || typeof threePetHandle.hitTest !== 'function') return;
+        const hit = threePetHandle.hitTest(data.clientX, data.clientY);
+        reportThreeHitRegion(hit);
+        if (data.button !== 0 || !hit) return;
+      }
+      if (threePetHandle && typeof threePetHandle.noteInteraction === 'function') {
+        threePetHandle.noteInteraction();
+      }
+      stage.dispatchEvent(new CustomEvent(CLICK_MESSAGE_TYPE, {
+        bubbles: true,
+        detail: {
+          button: data.button,
+          clientX: data.clientX,
+          clientY: data.clientY,
+          normalizedX: data.normalizedX,
+          normalizedY: data.normalizedY
+        }
+      }));
+    }
+
+    function tick(now) {
+      animationFrameRequest = 0;
+      if (manifest) {
+        const state = manifest.states[stateName] || manifest.states.idle;
+        const interval = usesPointerIdleFrameInterval()
+          ? IDLE_FRAME_INTERVAL_MS
+          : 1000 / state.fps;
+        if (!reducedMotion.matches && now - lastFrameAt >= interval) {
+          if (!state.loop && frame >= state.frames - 1) {
+            interactionStateActive = false;
+            setState(preferredStateName);
+            scheduleIdleVariant();
+            scheduleAnimationTick();
+            return;
+          }
+          const steps = Math.max(1, Math.floor((now - lastFrameAt) / interval));
+          frame = state.loop ? (frame + steps) % state.frames : Math.min(state.frames - 1, frame + steps);
+          lastFrameAt += steps * interval;
+          render();
+        }
+      }
+      scheduleAnimationTick();
+    }
+
+    const bubbleController = initPetBubbleController({
+      stage,
+      bubble: conversationBubble,
+      header: conversationCenterHeader,
+      clearAll: conversationCenterClearAll,
+      list: conversationList,
+      closeLayer: conversationCloseLayer,
+      stackLayers: conversationStackLayers,
+      toggle: conversationBubbleToggle,
+      toggleIcon: conversationBubbleToggleIcon,
+      toggleCount: conversationBubbleToggleCount,
+      screenMarginPx: BUBBLE_SCREEN_MARGIN_PX,
+      listMinHeightPx: BUBBLE_LIST_MIN_HEIGHT_PX,
+      listMaxHeightPx: BUBBLE_LIST_MAX_HEIGHT_PX,
+      getCopy: () => currentCopy(),
+      getLocaleTag: () => resolveCopyLocale(currentLocaleTag, UI_COPY_LOCALES),
+      formatCopy,
+      isReducedMotion: () => reducedMotion.matches,
+      isChineseLocale: () => isChineseLocale(currentLocaleTag),
+      openConversation: (conversationId) => openConversation(conversationId),
+      onDidRender: (info) => handleBubbleDidRender(info),
+      onCloseRevealChange: () => resize(),
+      onReplyKeyboardFocus: (active) => parent.postMessage({ type: 'daimon-pet:keyboard-focus', active }, '*'),
+      getActiveElement: () => document.activeElement
+    });
+
+    // 开机动画:host 在 runtime-ready 后发来;pet.js 尚未 mount 时先挂起,
+    // mount 完成后补播(后台预加载的 runtime 不自动播,等 host 消息)
+    let pendingBoot = false;
+    let shutdownGeneration = 0;
+    function playPetBoot() {
+      shutdownGeneration += 1;
+      if (!threePetHandle || typeof threePetHandle.playBoot !== 'function') {
+        pendingBoot = true;
+        return;
+      }
+      try {
+        threePetHandle.playBoot();
+      } catch {
+        // A Three bundle error must not break the Pet runtime.
+      }
+    }
+
+    // 关机动画:播完(或旧 runtime 不支持时立即)回 shutdown-done,host 据此销毁窗口
+    function playPetShutdown() {
+      const generation = ++shutdownGeneration;
+      const done = () => {
+        if (generation !== shutdownGeneration) return;
+        parent.postMessage({ type: SHUTDOWN_DONE_MESSAGE_TYPE }, '*');
+      };
+      if (!threePetHandle || typeof threePetHandle.playShutdown !== 'function') {
+        done();
+        return;
+      }
+      try {
+        threePetHandle.playShutdown().then(done, done);
+      } catch {
+        done();
+      }
+    }
+
+    let dragScreenStart = null;
+    let dragHasMoved = false;
+    let suppressBodyClickUntil = 0;
+    addEventListener('message', (event) => {
+      const data = event.data;
+      if (!data) return;
+      if (data.type === MESSAGE_TYPE) {
+        handleHostState(data.state);
+      } else if (data.type === 'daimon-pet:pointer') {
+        if (isThreeManifest(manifest) && threePetHandle) {
+          if (data.phase === 'down' && !threePetHandle.hitTest(data.clientX, data.clientY)) {
+            reportThreeHitRegion(false);
+            return;
+          }
+          const dragging = data.phase === 'down' ? true
+            : data.phase === 'up' || data.phase === 'cancel' ? false
+            : typeof data.dragging === 'boolean' ? data.dragging : threeDragging;
+          if (dragging && !threeDragging) {
+            dragScreenStart = Number.isFinite(data.screenX) && Number.isFinite(data.screenY)
+              ? { x: data.screenX, y: data.screenY } : null;
+            dragHasMoved = false;
+          }
+          if (dragScreenStart && Number.isFinite(data.screenX) && Number.isFinite(data.screenY) &&
+              Math.hypot(data.screenX - dragScreenStart.x, data.screenY - dragScreenStart.y) >= 6) {
+            dragHasMoved = true;
+          }
+          if (typeof threePetHandle.setDragging === 'function') {
+            if (!dragging && threeDragging && dragHasMoved) suppressBodyClickUntil = performance.now() + 100;
+            threePetHandle.setDragging(dragging, dragHasMoved && data.phase !== 'cancel');
+          }
+          if (!dragging) dragScreenStart = null;
+          if (dragging !== threeDragging) {
+            threeDragging = dragging;
+            // 拖动全程保持交互区,松手后按落点重新判定
+            if (dragging) reportThreeHitRegion(true);
+          }
+          const px = data.clientX;
+          const py = data.clientY;
+          if (Number.isFinite(px) && Number.isFinite(py)) {
+            handleThreePointerMove({ clientX: px, clientY: py, screenX: data.screenX });
+            if (!threeDragging && typeof threePetHandle.hitTest === 'function') {
+              reportThreeHitRegion(threePetHandle.hitTest(px, py));
+            }
+          }
+        }
+      } else if (data.type === POINTER_PRESENCE_MESSAGE_TYPE) {
+        handlePointerPresence(data.inside === true);
+      } else if (data.type === DISPLAY_SCALE_MESSAGE_TYPE) {
+        const scale = Number(data.scale);
+        displayScale = Number.isFinite(scale)
+          ? Math.max(DISPLAY_SCALE_MIN, Math.min(DISPLAY_SCALE_MAX, scale))
+          : 1;
+        resize();
+        if (threePetHandle && typeof threePetHandle.refreshDockLayout === 'function') {
+          threePetHandle.refreshDockLayout();
+        }
+      } else if (data.type === ANCHOR_MESSAGE_TYPE) {
+        const displaySize = Number(data.displaySize);
+        const sizeChanged = Number.isFinite(displaySize) && displaySize >= 1 && displaySize <= 4096 && displaySize !== hostDisplaySize;
+        if (sizeChanged) hostDisplaySize = displaySize;
+        const scale = Number(data.contentScale);
+        const scaleChanged = Number.isFinite(scale) && scale !== displayScale;
+        if (scaleChanged) displayScale = Math.max(DISPLAY_SCALE_MIN, Math.min(DISPLAY_SCALE_MAX, scale));
+        const xRatio = Number(data.xRatio);
+        const bottomRatio = Number(data.bottomRatio);
+        petAnchorXRatio = Number.isFinite(xRatio)
+          ? Math.min(1, Math.max(0, xRatio))
+          : 0.5;
+        // bottomRatio 允许大于 1:球盒透明边可伸出窗口底(见 currentPetAnchor),
+        // 精确上限在那里按盒尺寸钳制
+        petAnchorBottomRatio = Number.isFinite(bottomRatio)
+          ? Math.min(2, Math.max(0, bottomRatio))
+          : 1;
+        resize();
+        if ((scaleChanged || sizeChanged) && threePetHandle && typeof threePetHandle.refreshDockLayout === 'function') {
+          threePetHandle.refreshDockLayout();
+        }
+      } else if (data.type === CLICK_MESSAGE_TYPE) {
+        handleHostClick(data);
+      } else if (data.type === BOOT_MESSAGE_TYPE) {
+        playPetBoot();
+      } else if (data.type === SHUTDOWN_MESSAGE_TYPE) {
+        playPetShutdown();
+      }
+    });
+    parent.postMessage({ type: RUNTIME_READY_MESSAGE_TYPE }, '*');
+    const widgetApi = window.DaimonWidget;
+    const conversationsApi = widgetApi && widgetApi.conversations;
+    conversationBubble.setAttribute('role', 'region');
+    applyHostLocale(
+      widgetApi && typeof widgetApi.locale === 'string'
+        ? widgetApi.locale
+        : document.documentElement.lang || navigator.language
+    );
+    const stopLocaleChange =
+      widgetApi && typeof widgetApi.onLocaleChange === 'function'
+        ? widgetApi.onLocaleChange((nextLocale) => {
+            applyHostLocale(
+              typeof nextLocale === 'string' ? nextLocale : widgetApi.locale
+            );
+          })
+        : null;
+    let stopConversationStatusChange = null;
+    if (
+      conversationsApi &&
+      typeof conversationsApi.onStatusChange === 'function'
+    ) {
+      stopConversationStatusChange = conversationsApi.onStatusChange(
+        handleConversationStatus
+      );
+    }
+    function cleanupThreePet() {
+      const handle = threePetHandle;
+      threePetHandle = null;
+      if (!handle || typeof handle.dispose !== 'function') return;
+      try {
+        handle.dispose();
+      } catch {
+        // Page teardown must remain best-effort.
+      }
+    }
+    addEventListener('pagehide', (event) => {
+      if (event.persisted) return;
+      cleanupThreePet();
+      if (typeof stopLocaleChange === 'function') stopLocaleChange();
+      if (typeof stopConversationStatusChange === 'function') {
+        stopConversationStatusChange();
+      }
+    });
+    addEventListener('resize', resize);
+    reducedMotion.addEventListener?.('change', () => {
+      clearIdleVariantTimer();
+      render();
+      restartAnimationSchedule();
+      scheduleIdleVariant();
+    });
+    // 预览模式不注册任何 DOM 指针交互:眼睛钉住左上,命中/穿透/拖拽全部关闭
+    if (!PET_PREVIEW) {
+    document.addEventListener('mouseover', handleThreePointerMove);
+    document.addEventListener('mousemove', handleThreePointerMove);
+    document.addEventListener('click', (event) => {
+      if (event.button !== 0 || performance.now() < suppressBodyClickUntil) return;
+      if (threePetHandle && typeof threePetHandle.noteInteraction === 'function' &&
+          threePetHandle.hitTest(event.clientX, event.clientY)) {
+        threePetHandle.noteInteraction();
+      }
+    });
+
+    // 事件驱动的命中上报(参考 kimi-pet 的本地闭环):穿透态下 macOS forward 的
+    // mousemove 也会到达 iframe,命中判定不等 host 的 100ms 轮询,把"悬停→可按下"
+    // 的延迟压到最低;轮询路径('daimon-pet:pointer')保留为兜底。
+    // Deduplicate unchanged hit states while releasing misses immediately.
+    let threeDomHitLastAt = 0;
+    function handleThreeDomPointer(event) {
+      if (!isThreeManifest(manifest) || threeDragging) return;
+      if (!threePetHandle || typeof threePetHandle.hitTest !== 'function') return;
+      const now = performance.now();
+      if (event.type !== 'pointerdown' && now - threeDomHitLastAt < 16) return;
+      threeDomHitLastAt = now;
+      reportThreeHitRegion(threePetHandle.hitTest(Number(event.clientX), Number(event.clientY)));
+    }
+    document.addEventListener('mousemove', handleThreeDomPointer, true);
+    document.addEventListener('pointerdown', handleThreeDomPointer, true);
+    }
+
+    function loadThreePet(value) {
+      return fetch('/workspace/' + encodeURIComponent(value.three.file), { cache: 'no-store' })
+        .then((response) => {
+          if (!response.ok) throw new Error('threeLoadFailed');
+          return response.text();
+        })
+        .then((code) => {
+          if (typeof code !== 'string' || !code.trim()) {
+            throw new Error('threeLoadFailed');
+          }
+          new Function(code)();
+          const threeApi = window.DaimonPetThree;
+          if (!threeApi || typeof threeApi.mount !== 'function') {
+            throw new Error('threeLoadFailed');
+          }
+          threePet.setAttribute('aria-label', value.name || currentCopy().petAria);
+          threePet.style.display = 'block';
+          threePetHandle = threeApi.mount(threePet, PET_PREVIEW ? { preview: true } : { onBodyBoundsChange: acceptThreeBodyBounds });
+          if (!threePetHandle) throw new Error('threeLoadFailed');
+          resize();
+          if (pendingBoot) {
+            pendingBoot = false;
+            playPetBoot();
+          }
+        });
+    }
+
+    fetch('/workspace/pet.json', { cache: 'no-store' })
+      .then((response) => {
+        if (!response.ok) throw new Error('manifestLoadFailed');
+        return response.json();
+      })
+      .then((value) => {
+        if (!value || typeof value !== 'object') {
+          throw new Error('manifestInvalid');
+        }
+        manifest = value;
+        applyBubbleTheme(value.theme && value.theme.bubble);
+        if (isThreeManifest(value)) {
+          if (!value.three || value.three.file !== 'pet.js') {
+            throw new Error('threeManifestInvalid');
+          }
+          loadThreePet(value).catch((reason) =>
+            showError(reason instanceof Error ? reason.message : String(reason))
+          );
+          return;
+        }
+        if (!value.atlas || !value.states || !value.states.idle) {
+          throw new Error('spritesheetManifestInvalid');
+        }
+        pet.setAttribute('aria-label', value.name || currentCopy().petAria);
+        pet.style.width = String(value.atlas.frameWidth) + 'px';
+        pet.style.height = String(value.atlas.frameHeight) + 'px';
+        pet.style.backgroundImage = 'url("/workspace/' + encodeURIComponent(value.spritesheet) + '")';
+        pet.style.backgroundSize =
+          String(value.atlas.frameWidth * value.atlas.columns) + 'px ' +
+          String(value.atlas.frameHeight * value.atlas.rows) + 'px';
+        pet.style.display = 'block';
+        resize();
+        measureSpritesheetWhenReady();
+        setState(preferredStateName);
+        render();
+        restartAnimationSchedule();
+        scheduleIdleVariant();
+      })
+      .catch((reason) => showError(reason instanceof Error ? reason.message : String(reason)));
+  })();
+  </script>
+  <script>
+  // Мысли лисички: клик → облачко со случайной милой фразой
+  (() => {
+    'use strict';
+    const cloud = document.getElementById('thought-cloud');
+    const stage = document.getElementById('stage');
+    if (!cloud || !stage) return;
+    const PHRASES = [
+      'Мур!', 'Я тут!', 'Погладь ещё!', 'Хорошего дня, Бос!',
+      'Фыр-фыр!', 'Я тебя вижу', 'Работаем?', 'Ты лучший!'
+    ];
+    let hideTimer = 0;
+    stage.addEventListener('daimon-pet:click', () => {
+      cloud.textContent = PHRASES[Math.floor(Math.random() * PHRASES.length)];
+      cloud.classList.add('show');
+      clearTimeout(hideTimer);
+      hideTimer = setTimeout(() => cloud.classList.remove('show'), 3500);
+    });
+  })();
+  </script>
+</body>
+</html>
